@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Mazing Contest browser smoke test</title>
+  </head>
+  <body data-status="pending">
+    <pre id="result">Running…</pre>
+    <script type="module">
+      import {
+        CELL_TYPES,
+        MAP_SHAPES,
+        buildRivalMaze,
+        calculateRouteMetrics,
+        calculateRunnerSimulation,
+        createCellGrid,
+        createGameState,
+        evaluateObstacleGroupPlacement,
+        findShortestPath,
+        generateBaseMap,
+        generateRoundResources,
+        getRunnerPositionAtTime,
+        tryPlaceObstacleGroup,
+        tryRemoveGeneratedObject,
+        tryRemoveObstacleGroup,
+      } from "../src/game-engine.js";
+      import {
+        addRoundScores,
+        createCumulativeScores,
+        normalizeRoundCount,
+        rankCumulativeScores,
+      } from "../src/contest-scoring.js";
+      import { resolveSpectatedContestant } from "../src/spectator.js";
+      import {
+        createChallengeUrl,
+        deriveContestRoundSeed,
+        normalizeChallengeSeed,
+        parseChallengeTarget,
+      } from "../src/challenge.js";
+
+      const result = document.querySelector("#result");
+      const checks = [];
+      const assert = (condition, message) => {
+        if (!condition) throw new Error(message);
+        checks.push(message);
+      };
+      const approximately = (first, second, epsilon = 1e-7) =>
+        Math.abs(first - second) <= epsilon;
+
+      try {
+        const spectatorContestants = [
+          { id: "player", isPlayer: true, state: { route: ["player"] } },
+          { id: "bramble", state: { route: ["bramble"] } },
+        ];
+        assert(
+          resolveSpectatedContestant(spectatorContestants, "bramble", true).id === "bramble" &&
+            resolveSpectatedContestant(spectatorContestants, "bramble", false).id === "player" &&
+            resolveSpectatedContestant(spectatorContestants, "missing", true).id === "player",
+          "spectator selection switches maze state only during the race",
+        );
+        assert(
+          normalizeRoundCount(null) === 3 &&
+            normalizeRoundCount("5") === 5 &&
+            normalizeRoundCount(0) === 1 &&
+            normalizeRoundCount(99) === 20,
+          "contest round selection is normalized to 1 through 20",
+        );
+        assert(
+          normalizeChallengeSeed(" friend-42 ") === "FRIEND-42" &&
+            deriveContestRoundSeed("friend-42", 1) === "FRIEND-42" &&
+            deriveContestRoundSeed("friend-42", 2) ===
+              deriveContestRoundSeed("FRIEND-42", 2) &&
+            deriveContestRoundSeed("friend-42", 2) !==
+              deriveContestRoundSeed("friend-42", 3) &&
+            parseChallengeTarget("12345") === 12_345 &&
+            parseChallengeTarget("bad") === null &&
+            createChallengeUrl("https://example.com/game/?skipIntro=1#old", {
+              contestSeed: "friend-42",
+              rounds: 3,
+              targetMs: 12_345,
+            }) === "https://example.com/game/?challenge=FRIEND-42&rounds=3&target=12345",
+          "one challenge link deterministically defines every round and score target",
+        );
+        const scoreContestants = [
+          { id: "player", name: "You", scoreMs: 4_000 },
+          { id: "rival", name: "Rival", scoreMs: 5_000 },
+        ];
+        const emptyTotals = createCumulativeScores(scoreContestants);
+        const firstTotals = addRoundScores(emptyTotals, scoreContestants);
+        const finalTotals = addRoundScores(firstTotals, [
+          { id: "player", scoreMs: 3_000 },
+          { id: "rival", scoreMs: 1_000 },
+        ]);
+        const totalRanking = rankCumulativeScores(scoreContestants, finalTotals);
+        assert(
+          emptyTotals.player === 0 &&
+            finalTotals.player === 7_000 &&
+            finalTotals.rival === 6_000 &&
+            totalRanking[0].id === "player" &&
+            totalRanking[0].rank === 1,
+          "contest winner is ranked by cumulative milliseconds across rounds",
+        );
+
+        const firstMap = generateBaseMap({ seed: "browser-smoke", width: 15, height: 11 });
+        const secondMap = generateBaseMap({ seed: "browser-smoke", width: 15, height: 11 });
+        assert(JSON.stringify(firstMap) === JSON.stringify(secondMap), "same seed reproduces the base map");
+        assert(findShortestPath(firstMap)?.length > 1, "generated base map has a route");
+        const shapedMaps = Object.values(MAP_SHAPES).map((mapShape) =>
+          generateBaseMap({
+            seed: `browser-${mapShape}`,
+            width: 20,
+            height: 15,
+            mapShape,
+            rockDensity: 0,
+            slowTowerCount: 0,
+            speedTowerCount: 0,
+          }),
+        );
+        assert(
+          shapedMaps.every(
+            (map) =>
+              findShortestPath(map)?.length > 1 &&
+              !map.voidCells.some(
+                (cell) =>
+                  (cell.x === map.start.x && cell.y === map.start.y) ||
+                  (cell.x === map.goal.x && cell.y === map.goal.y),
+              ),
+          ) &&
+            shapedMaps.find((map) => map.mapShape === "rectangle").voidCells.length === 0 &&
+            shapedMaps
+              .filter((map) => map.mapShape !== "rectangle")
+              .every((map) => map.voidCells.length > 0),
+          "rectangle, diamond, donut, and flower silhouettes are playable",
+        );
+        const browserFlower = shapedMaps.find((map) => map.mapShape === "flower");
+        assert(
+          20 * 15 - browserFlower.voidCells.length === 128,
+          "flower petals use the slightly wider silhouette",
+        );
+        const browserDonut = shapedMaps.find((map) => map.mapShape === "donut");
+        const donutState = createGameState({ baseMap: browserDonut, startingGold: 100 });
+        const donutVoid = browserDonut.voidCells[0];
+        const voidPlacement = evaluateObstacleGroupPlacement(donutState, {
+          type: "crate",
+          cost: 10,
+          cells: [donutVoid],
+        });
+        assert(
+          createCellGrid(donutState)[donutVoid.y][donutVoid.x] === CELL_TYPES.VOID &&
+            !voidPlacement.ok &&
+            voidPlacement.reason === "outside-map" &&
+            donutState.gold === 100,
+          "void silhouette cells are unwalkable and unbuildable",
+        );
+        const feastMap = generateBaseMap({
+          seed: "browser-endless-feast",
+          width: 20,
+          height: 15,
+          mapShape: "diamond",
+          rockDensity: 0.15,
+          slowTowerCount: 1,
+          speedTowerCount: 1,
+          endlessFeastCount: 1,
+        });
+        const feastState = createGameState({ baseMap: feastMap, startingGold: 100 });
+        const feastIndex = feastState.route.findIndex(
+          (cell) =>
+            cell.x === feastMap.endlessFeast.x &&
+            cell.y === feastMap.endlessFeast.y,
+        );
+        const feastPlacement = evaluateObstacleGroupPlacement(feastState, {
+          type: "crate",
+          cost: 10,
+          cells: [feastMap.endlessFeast],
+        });
+        const feastArrival = feastState.runnerSimulation.segments.find(
+          (segment) => segment.type === "move" && segment.toIndex === feastIndex,
+        );
+        assert(
+          feastIndex > 0 &&
+            feastIndex < feastState.route.length - 1 &&
+            createCellGrid(feastState)[feastMap.endlessFeast.y][feastMap.endlessFeast.x] ===
+              CELL_TYPES.ENDLESS_FEAST &&
+            !feastPlacement.ok &&
+            feastPlacement.reason === "protected-cell" &&
+            getRunnerPositionAtTime(feastState.runnerSimulation, 0).insatiablyHungry === true &&
+            getRunnerPositionAtTime(
+              feastState.runnerSimulation,
+              feastArrival.endMs,
+            ).insatiablyHungry === false &&
+            feastState.gold === 100,
+          "Endless Feast is a protected mandatory checkpoint",
+        );
+        const feastObjects = [
+          ...feastMap.baseRocks,
+          ...feastMap.baseSlowTowers,
+          ...feastMap.baseSpeedTowers,
+        ];
+        assert(
+          feastObjects.every(
+            (object) =>
+              Math.abs(object.x - feastMap.endlessFeast.x) +
+                Math.abs(object.y - feastMap.endlessFeast.y) >
+              1,
+          ),
+          "Endless Feast keeps an open cardinal clearing",
+        );
+        const openSideState = createGameState({
+          baseMap: {
+            width: 7,
+            height: 7,
+            seed: "browser-feast-open-side",
+            start: { x: 0, y: 3 },
+            goal: { x: 6, y: 3 },
+            endlessFeast: { x: 3, y: 3 },
+            baseRocks: [],
+          },
+          startingGold: 100,
+        });
+        const feastSides = [
+          { x: 3, y: 2 },
+          { x: 4, y: 3 },
+          { x: 3, y: 4 },
+          { x: 2, y: 3 },
+        ];
+        const threeBlockedSides = tryPlaceObstacleGroup(openSideState, {
+          id: "browser-three-feast-sides",
+          type: "test-wall",
+          cost: 10,
+          cells: feastSides.slice(0, 3),
+        });
+        assert(
+          threeBlockedSides.ok &&
+            threeBlockedSides.state.gold === 90 &&
+            threeBlockedSides.state.route.some(
+              (cell) => cell.x === 3 && cell.y === 3,
+            ),
+          "Endless Feast permits builds on three sides",
+        );
+        const lastSideBlocked = evaluateObstacleGroupPlacement(
+          threeBlockedSides.state,
+          {
+            id: "browser-last-feast-side",
+            type: "test-wall",
+            cost: 10,
+            cells: [feastSides[3]],
+          },
+        );
+        assert(
+          !lastSideBlocked.ok &&
+            lastSideBlocked.reason === "blocks-path" &&
+            lastSideBlocked.state.gold === 90,
+          "Endless Feast rejects blocking its final open side",
+        );
+        assert(
+          firstMap.endlessFeastSpawnChance === 0.2,
+          "Endless Feast uses the default independent 20% round chance",
+        );
+
+        const openDiagonalPath = findShortestPath({
+          width: 3,
+          height: 3,
+          start: { x: 0, y: 0 },
+          goal: { x: 2, y: 2 },
+          blocked: [],
+        });
+        const diagonalMetrics = calculateRouteMetrics(openDiagonalPath, {
+          stepDurationMs: 1_000,
+          turnPenaltyMs: 0,
+        });
+        assert(
+          openDiagonalPath.length === 3 &&
+            approximately(diagonalMetrics.distance, 2 * Math.SQRT2) &&
+            diagonalMetrics.travelTimeMs === Math.round(2_000 * Math.SQRT2),
+          "open fields use the shorter weighted diagonal route",
+        );
+
+        const oneCornerSideBlocked = findShortestPath({
+          width: 2,
+          height: 2,
+          start: { x: 0, y: 0 },
+          goal: { x: 1, y: 1 },
+          blocked: [{ x: 1, y: 0 }],
+        });
+        const bothCornerSidesBlocked = findShortestPath({
+          width: 2,
+          height: 2,
+          start: { x: 0, y: 0 },
+          goal: { x: 1, y: 1 },
+          blocked: [{ x: 1, y: 0 }, { x: 0, y: 1 }],
+        });
+        assert(
+          oneCornerSideBlocked.length === 2 && bothCornerSidesBlocked === null,
+          "diagonals round one object but cannot squeeze between two objects",
+        );
+
+        const resources = generateRoundResources("browser-smoke");
+        assert(
+          JSON.stringify(resources) === JSON.stringify(generateRoundResources("browser-smoke")) &&
+            resources.gold >= 80 && resources.gold <= 250 &&
+            resources.tears >= 0 && resources.tears <= 2,
+          "round gold and Tears are deterministic bounded integers",
+        );
+        const towerMap = generateBaseMap({
+          seed: "forced-neutral-towers",
+          width: 15,
+          height: 11,
+          rockDensity: 0.1,
+          slowTowerCount: 2,
+          speedTowerCount: 1,
+        });
+        const towerState = createGameState({ baseMap: towerMap });
+        const speedTower = towerMap.baseSpeedTowers[0];
+        assert(
+          towerMap.baseSlowTowers.length === 2 &&
+            towerMap.baseSpeedTowers.length === 1 &&
+            findShortestPath(towerMap) &&
+            createCellGrid(towerState)[speedTower.y][speedTower.x] === CELL_TYPES.SPEED_TOWER,
+          "forced neutral slow and speed towers are distinct blockers that preserve a route",
+        );
+        const guaranteedSpeedMap = generateBaseMap({
+          seed: "guaranteed-speed",
+          width: 7,
+          height: 5,
+          rockDensity: 0,
+          slowTowerCount: 0,
+          speedTowerSpawnChance: 1,
+        });
+        const noSpeedMap = generateBaseMap({
+          seed: "no-speed",
+          width: 7,
+          height: 5,
+          rockDensity: 0,
+          slowTowerCount: 0,
+          speedTowerSpawnChance: 0,
+        });
+        assert(
+          firstMap.speedTowerSpawnChance === 0.25 &&
+            guaranteedSpeedMap.baseSpeedTowers.length === 1 &&
+            noSpeedMap.baseSpeedTowers.length === 0,
+          "neutral speed towers use the configurable 25% default roll",
+        );
+        const visualSpeedMap = Array.from({ length: 32 }, (_, index) =>
+          generateBaseMap({
+            seed: `VISUAL-SPEED-${index}`,
+            width: 15,
+            height: 11,
+            rockDensity: 0.115,
+          }),
+        ).find((map) => map.baseSpeedTowers.length === 1);
+        assert(visualSpeedMap, "the default roll produces a reproducible speed-tower round");
+        document.body.dataset.speedTowerSeed = visualSpeedMap.seed;
+
+        const corridor = {
+          width: 5,
+          height: 1,
+          seed: "corridor",
+          start: { x: 0, y: 0 },
+          goal: { x: 4, y: 0 },
+          baseRocks: [],
+        };
+        const corridorState = createGameState({ baseMap: corridor, startingGold: 20, refundRate: 1 });
+        const blocked = evaluateObstacleGroupPlacement(corridorState, {
+          id: "seal",
+          type: "crate",
+          cost: 10,
+          cells: [{ x: 2, y: 0 }],
+        });
+        assert(!blocked.ok && blocked.reason === "blocks-path", "route-sealing placement is rejected");
+        assert(corridorState.gold === 20 && corridorState.obstacles.length === 0, "rejected placement is atomic and free");
+
+        const generatedObjectState = createGameState({
+          baseMap: {
+            width: 5,
+            height: 3,
+            seed: "browser-demolition",
+            start: { x: 0, y: 1 },
+            goal: { x: 4, y: 1 },
+            baseRocks: [{ x: 2, y: 1 }],
+          },
+          startingGold: 8,
+        });
+        const demolished = tryRemoveGeneratedObject(generatedObjectState, { x: 2, y: 1 });
+        assert(
+          demolished.ok &&
+            demolished.cost === 8 &&
+            demolished.state.gold === 0 &&
+            demolished.state.baseRocks.length === 0 &&
+            generatedObjectState.baseRocks.length === 1,
+          "generated objects can be removed immutably for 8 gold",
+        );
+
+        const openBoard = {
+          width: 5,
+          height: 3,
+          seed: "groups",
+          start: { x: 0, y: 1 },
+          goal: { x: 4, y: 1 },
+          baseRocks: [],
+        };
+        const groupState = createGameState({ baseMap: openBoard, startingGold: 20, refundRate: 1 });
+        const placed = tryPlaceObstacleGroup(groupState, {
+          id: "fence-a",
+          type: "fence",
+          cost: 18,
+          cells: [{ x: 2, y: 0 }, { x: 3, y: 0 }],
+        });
+        assert(placed.ok && placed.state.gold === 2 && placed.state.obstacles.length === 2, "multi-cell group charges once");
+        assert(groupState.gold === 20 && groupState.obstacles.length === 0, "placement does not mutate its input state");
+        const removed = tryRemoveObstacleGroup(placed.state, "fence-a", { refundRate: 1 });
+        assert(removed.ok && removed.state.gold === 20 && removed.state.obstacles.length === 0, "group removal refunds once and removes every cell");
+        const cappedRefund = tryRemoveObstacleGroup(placed.state, "fence-a", { refundAmount: 999 });
+        assert(cappedRefund.ok && cappedRefund.refund === 18 && cappedRefund.state.gold === 20, "refund cannot exceed purchase price");
+
+        const tearState = createGameState({
+          baseMap: openBoard,
+          startingGold: 80,
+          startingTears: 1,
+          stepDurationMs: 280,
+          turnPenaltyMs: 0,
+        });
+        const slowPlaced = tryPlaceObstacleGroup(tearState, {
+          id: "slow-a",
+          type: "slow-tower",
+          cost: 0,
+          tearCost: 1,
+          cells: [{ x: 2, y: 0 }],
+        });
+        assert(
+          slowPlaced.ok && slowPlaced.state.tears === 0 && slowPlaced.state.scoreMs > tearState.scoreMs,
+          "a Tear atomically builds a score-affecting slow tower",
+        );
+        const slowRemoved = tryRemoveObstacleGroup(slowPlaced.state, "slow-a", { refundRate: 1 });
+        assert(
+          slowRemoved.ok && slowRemoved.tearRefund === 1 && slowRemoved.state.tears === 1,
+          "removing a slow tower refunds its Tear exactly once",
+        );
+
+        const slowSimulation = calculateRunnerSimulation(
+          [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }],
+          [{ x: 0, y: 1, id: "start-slow" }],
+          { stepDurationMs: 280, turnPenaltyMs: 0, slowDurationMs: 5000, slowTowerCooldownMs: 5000 },
+        );
+        assert(
+          slowSimulation.travelTimeMs === 1680 && slowSimulation.slowApplications.length === 1,
+          "a cardinal tower halves speed without frame-rate timing",
+        );
+        assert(getRunnerPositionAtTime(slowSimulation, 500).slowed, "runner timeline exposes the active debuff for rendering");
+
+        const longPath = Array.from({ length: 13 }, (_, x) => ({ x, y: 0 }));
+        const speedSimulation = calculateRunnerSimulation(longPath, [], {
+          stepDurationMs: 1_000,
+          turnPenaltyMs: 0,
+          speedDurationMs: 5_000,
+          speedSpeedMultiplier: 2,
+          speedTowers: [{ x: 0, y: 1, id: "start-speed" }],
+        });
+        assert(
+          speedSimulation.travelTimeMs === 7_000 &&
+            speedSimulation.speedApplications.length === 1 &&
+            getRunnerPositionAtTime(speedSimulation, 2_500).spedUp,
+          "a speed tower grants an exact five-second 2x movement boost",
+        );
+
+        const diagonalOnlySpeed = calculateRunnerSimulation(
+          [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+          [],
+          {
+            stepDurationMs: 1_000,
+            turnPenaltyMs: 0,
+            speedTowers: [{ x: 1, y: 0, id: "diagonal-neighbor" }],
+          },
+        );
+        assert(
+          diagonalOnlySpeed.speedApplications.length === 1 &&
+            diagonalOnlySpeed.travelTimeMs === Math.round((Math.SQRT2 * 1_000) / 2),
+          "tower adjacency stays cardinal while boosted diagonal travel uses geometric length",
+        );
+
+        const balancedSimulation = calculateRunnerSimulation(
+          [{ x: 0, y: 1 }, { x: 1, y: 1 }, { x: 2, y: 1 }],
+          [{ x: 0, y: 0, id: "balance-slow" }],
+          {
+            stepDurationMs: 1_000,
+            turnPenaltyMs: 0,
+            speedTowers: [{ x: 0, y: 2, id: "balance-speed" }],
+          },
+        );
+        const balancedPosition = getRunnerPositionAtTime(balancedSimulation, 500);
+        assert(
+          balancedSimulation.travelTimeMs === 2_000 &&
+            balancedPosition.slowed &&
+            balancedPosition.spedUp &&
+            balancedPosition.speedMultiplier === 1,
+          "simultaneous 0.5x slow and 2x speed effects cancel but remain visible",
+        );
+
+        const goalOnlySpeed = calculateRunnerSimulation(
+          [{ x: 0, y: 0 }, { x: 1, y: 0 }],
+          [],
+          {
+            stepDurationMs: 1_000,
+            turnPenaltyMs: 0,
+            speedTowers: [{ x: 1, y: 1, id: "goal-only" }],
+          },
+        );
+        assert(
+          goalOnlySpeed.speedApplications.length === 0 && goalOnlySpeed.travelTimeMs === 1_000,
+          "entering the goal does not create a post-finish speed trigger",
+        );
+
+        const aiInitial = createGameState({ baseMap: firstMap, startingGold: 30, obstacleCost: 10 });
+        const firstAi = buildRivalMaze(aiInitial, { seed: "same-ai", maxPlacements: 3 });
+        const secondAi = buildRivalMaze(aiInitial, { seed: "same-ai", maxPlacements: 3 });
+        assert(JSON.stringify(firstAi) === JSON.stringify(secondAi), "rival commands are deterministic");
+        assert(firstAi.state.route && firstAi.state.gold >= 0, "rival preserves a legal route and budget");
+
+        const appFrame = document.createElement("iframe");
+        Object.assign(appFrame.style, {
+          position: "fixed",
+          left: "-2000px",
+          top: "0",
+          width: "1440px",
+          height: "1000px",
+          border: "0",
+        });
+        appFrame.src = "/?challenge=SPECTATORCLICK&rounds=3&target=12345&skipIntro=1";
+        document.body.append(appFrame);
+        try {
+          await new Promise((resolve, reject) => {
+            const timeout = window.setTimeout(
+              () => reject(new Error("Spectator click test app did not load.")),
+              5_000,
+            );
+            appFrame.addEventListener("load", () => {
+              window.clearTimeout(timeout);
+              resolve();
+            }, { once: true });
+          });
+          const appDocument = appFrame.contentDocument;
+          assert(
+            appDocument.body.dataset.contestSeed === "SPECTATORCLICK" &&
+              appDocument.body.dataset.sharedChallenge === "true" &&
+              appDocument.querySelector("#roundCountInput")?.disabled === true &&
+              appDocument.querySelector("#challengeTarget")?.textContent.includes("12.3s"),
+            "shared challenge links lock the contest and display the score to beat",
+          );
+          const rivalAiStats = JSON.parse(appDocument.body.dataset.rivalAiStats ?? "[]");
+          const vesperStats = rivalAiStats.find((entry) => entry.id === "vesper");
+          assert(
+            vesperStats?.strategy === "lookahead" &&
+              vesperStats.maxEvaluations === 20_000 &&
+              vesperStats.evaluations > 0 &&
+              vesperStats.evaluations <= vesperStats.maxEvaluations,
+            `Vesper uses deterministic lookahead within a hard preview budget (${vesperStats?.evaluations ?? 0}/${vesperStats?.maxEvaluations ?? 0})`,
+          );
+          appDocument.querySelector("#runButton").click();
+          await new Promise((resolve) => window.setTimeout(resolve, 2_100));
+          const cinderRow = appDocument.querySelector("[data-spectate-id='cinder']");
+          const cinderName = cinderRow?.querySelector("strong");
+          cinderName?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+          await new Promise((resolve) => window.setTimeout(resolve, 350));
+          const rowStayedMounted =
+            cinderRow === appDocument.querySelector("[data-spectate-id='cinder']") &&
+            cinderName === cinderRow?.querySelector("strong");
+          cinderName?.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+          cinderName?.click();
+          await new Promise((resolve) => window.setTimeout(resolve, 0));
+          const clickSnapshot = {
+            rowStayedMounted,
+            phase: appDocument.body.dataset.phase,
+            spectating: appDocument.body.dataset.spectating,
+            heading: appDocument.querySelector("#mazeOwnerHeading")?.textContent,
+            rowCount: appDocument.querySelectorAll("[data-spectate-id]").length,
+            appError: appDocument.body.dataset.appError ?? null,
+          };
+          const spectatorClickWorked =
+            rowStayedMounted &&
+              clickSnapshot.spectating === "cinder" &&
+              clickSnapshot.heading === "Cinder Vale's maze" &&
+              !clickSnapshot.appError;
+          if (!spectatorClickWorked) {
+            throw new Error(
+              `Spectator click regression: ${JSON.stringify(clickSnapshot)}`,
+            );
+          }
+          assert(
+            spectatorClickWorked,
+            "contestant names remain stable and clickable across race ticks",
+          );
+        } finally {
+          appFrame.remove();
+        }
+
+        document.body.dataset.status = "passed";
+        result.textContent = `PASS (${checks.length} checks)\n${checks.map((check) => `✓ ${check}`).join("\n")}`;
+      } catch (error) {
+        document.body.dataset.status = "failed";
+        result.textContent = `FAIL\n${error.stack || error.message}`;
+      }
+    </script>
+  </body>
+</html>
