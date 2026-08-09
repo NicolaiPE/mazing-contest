@@ -15,12 +15,8 @@ import {
   tryRemoveObstacleGroup,
 } from "./game-engine.js";
 import {
-  DEFAULT_CONTEST_ROUNDS,
-  MAX_CONTEST_ROUNDS,
-  MIN_CONTEST_ROUNDS,
   addRoundScores,
   createCumulativeScores,
-  normalizeRoundCount,
   rankCumulativeScores,
 } from "./contest-scoring.js";
 import { resolveSpectatedContestant } from "./spectator.js";
@@ -30,13 +26,20 @@ import {
   normalizeChallengeSeed,
   parseChallengeTarget,
 } from "./challenge.js";
+import {
+  AUGMENTS,
+  AUGMENT_IDS,
+  RUN_FLOORS,
+  applyMapAugments,
+  applyResourceAugments,
+  discountedBuildingCost,
+  draftAugmentChoices,
+  floorConfig,
+} from "./roguelike.js";
 
-const GRID_WIDTH = 20;
-const GRID_HEIGHT = 15;
 const ROCK_DENSITY = 0.115;
 const MIN_STARTING_GOLD = 80;
 const MAX_STARTING_GOLD = 250;
-const BUILD_DURATION_MS = 60_000;
 const STEP_DURATION_MS = 280;
 // Scores use deterministic geometric movement time. Turns remain visible route
 // metadata but do not make results depend on equivalent path tie ordering.
@@ -136,7 +139,7 @@ const FAILURE_COPY = Object.freeze({
   "duplicate-group-id": "That obstacle has already been placed.",
   "invalid-group": "That obstacle footprint is invalid.",
   "no-generated-object": "Choose a rock or neutral tower generated with this field.",
-  "outside-map": "That cell lies outside this round's playable shape.",
+  "outside-map": "That cell lies outside this floor's playable shape.",
 });
 
 const dom = {
@@ -146,6 +149,11 @@ const dom = {
   gold: document.querySelector("#goldValue"),
   tears: document.querySelector("#tearValue"),
   timer: document.querySelector("#timerValue"),
+  augmentValue: document.querySelector("#augmentValue"),
+  activeAugmentChip: document.querySelector("#activeAugmentChip"),
+  speedTowerNote: document.querySelector("#speedTowerNote"),
+  speedTowerRule: document.querySelector("#speedTowerRule"),
+  slowTowerRule: document.querySelector("#slowTowerRule"),
   seed: document.querySelector("#seedValue"),
   shape: document.querySelector("#shapeValue"),
   phaseKicker: document.querySelector("#phaseKicker"),
@@ -172,6 +180,7 @@ const dom = {
   toolCards: [...document.querySelectorAll(".tool-card")],
   eventLog: document.querySelector("#eventLog"),
   welcomeModal: document.querySelector("#welcomeModal"),
+  augmentModal: document.querySelector("#augmentModal"),
   resultModal: document.querySelector("#resultModal"),
   startButton: document.querySelector("#startButton"),
   replayRoundButton: document.querySelector("#replayRoundButton"),
@@ -188,6 +197,9 @@ const dom = {
   resultShareButton: document.querySelector("#resultShareButton"),
   challengeTarget: document.querySelector("#challengeTarget"),
   roundCountHelp: document.querySelector("#roundCountHelp"),
+  augmentEyebrow: document.querySelector("#augmentEyebrow"),
+  augmentChoices: document.querySelector("#augmentChoices"),
+  augmentOwned: document.querySelector("#augmentOwned"),
 };
 
 const context = dom.canvas.getContext("2d");
@@ -195,9 +207,7 @@ const query = new URLSearchParams(window.location.search);
 let isSharedChallenge = query.has("challenge");
 let phase = "welcome";
 let roundNumber = 0;
-let totalRounds = normalizeRoundCount(query.get("rounds"), {
-  fallback: DEFAULT_CONTEST_ROUNDS,
-});
+let totalRounds = RUN_FLOORS;
 let completedRounds = 0;
 let cumulativeScores = createCumulativeScores([
   { id: "player" },
@@ -206,6 +216,10 @@ let cumulativeScores = createCumulativeScores([
 let contestSeed = "";
 let roundSeed = "";
 let roundResources = { gold: 100, tears: 0 };
+let rivalRoundResources = { gold: 100, tears: 0 };
+let currentFloor = floorConfig(1);
+let selectedAugments = [];
+let pendingAugmentChoices = [];
 let baseMap = null;
 let initialPlayerState = null;
 let playerState = null;
@@ -217,10 +231,10 @@ let actionHistory = [];
 let selectedToolId = "crate";
 let rotation = 0;
 let hoverCell = null;
-let keyboardCell = { x: 2, y: Math.floor(GRID_HEIGHT / 2) };
+let keyboardCell = { x: 2, y: Math.floor(currentFloor.height / 2) };
 let previewCache = null;
 let buildDeadline = 0;
-let buildRemainingMs = BUILD_DURATION_MS;
+let buildRemainingMs = currentFloor.buildDurationMs;
 let runStartedAt = 0;
 let runElapsedMs = 0;
 let phaseToken = 0;
@@ -292,22 +306,20 @@ function requestedSeed() {
 let challengeTargetMs = parseChallengeTarget(query.get("target"));
 
 function selectedRoundCount() {
-  const value = normalizeRoundCount(dom.roundCount?.value, {
-    minimum: MIN_CONTEST_ROUNDS,
-    maximum: MAX_CONTEST_ROUNDS,
-    fallback: totalRounds,
-  });
-  if (dom.roundCount) dom.roundCount.value = String(value);
-  return value;
+  if (dom.roundCount) dom.roundCount.value = String(RUN_FLOORS);
+  return RUN_FLOORS;
 }
 
-function updateStartButtonLabel(rounds = selectedRoundCount()) {
-  dom.startButton.textContent = `Start ${rounds}-round contest`;
+function updateStartButtonLabel() {
+  dom.startButton.textContent = `Start ${RUN_FLOORS}-floor run`;
 }
 
 function resetContestProgress() {
   roundNumber = 0;
   completedRounds = 0;
+  currentFloor = floorConfig(1);
+  selectedAugments = [];
+  pendingAugmentChoices = [];
   cumulativeScores = createCumulativeScores([
     { id: "player" },
     ...RIVAL_SPECS,
@@ -316,6 +328,7 @@ function resetContestProgress() {
   document.body.dataset.contestRounds = String(totalRounds);
   document.body.dataset.cumulativeScores = JSON.stringify(cumulativeScores);
   document.body.dataset.contestComplete = "false";
+  document.body.dataset.augments = "[]";
 }
 
 function prepareContest(seed, waitForWelcome = true) {
@@ -325,37 +338,44 @@ function prepareContest(seed, waitForWelcome = true) {
   initRound(deriveContestRoundSeed(contestSeed, 1), waitForWelcome);
 }
 
-function createRoundState(seed, resources) {
+function createRoundState(seed, resources, floor) {
   const sharedMap = generateBaseMap({
     seed,
-    width: GRID_WIDTH,
-    height: GRID_HEIGHT,
+    width: floor.width,
+    height: floor.height,
     rockDensity: ROCK_DENSITY,
   });
+  const playerBaseMap = applyMapAugments(sharedMap, selectedAugments);
+  const playerResources = applyResourceAugments(resources, selectedAugments);
   const state = createGameState({
-    baseMap: sharedMap,
-    startingGold: resources.gold,
-    startingTears: resources.tears,
-    obstacleCost: TOOLS.crate.cost,
+    baseMap: playerBaseMap,
+    startingGold: playerResources.gold,
+    startingTears: playerResources.tears,
+    obstacleCost: discountedBuildingCost(TOOLS.crate.cost, selectedAugments),
     refundRate: 1,
     stepDurationMs: STEP_DURATION_MS,
     turnPenaltyMs: TURN_PENALTY_MS,
+    slowTowerAffectsDiagonals: selectedAugments.includes(
+      AUGMENT_IDS.WIDE_LAMENT,
+    ),
   });
-  return { sharedMap, state };
+  return { sharedMap, playerBaseMap, playerResources, state };
 }
 
 function initRound(seed, waitForWelcome = false) {
   phaseToken += 1;
   roundNumber += 1;
+  currentFloor = floorConfig(roundNumber);
   roundSeed = seed;
-  roundResources = generateRoundResources(seed, {
+  rivalRoundResources = generateRoundResources(seed, {
     minGold: MIN_STARTING_GOLD,
     maxGold: MAX_STARTING_GOLD,
     minTears: 0,
     maxTears: 2,
   });
-  const created = createRoundState(seed, roundResources);
-  baseMap = created.sharedMap;
+  const created = createRoundState(seed, rivalRoundResources, currentFloor);
+  roundResources = created.playerResources;
+  baseMap = created.playerBaseMap;
   initialPlayerState = created.state;
   playerState = created.state;
   spectatedContestantId = "player";
@@ -365,13 +385,20 @@ function initRound(seed, waitForWelcome = false) {
   rotation = 0;
   hoverCell = null;
   keyboardCell = { ...(playerState.route[1] ?? playerState.start) };
-  buildRemainingMs = BUILD_DURATION_MS;
+  buildRemainingMs = currentFloor.buildDurationMs;
   runElapsedMs = 0;
   previewCache = null;
-  rivals = buildRivals(baseMap, seed, roundResources);
-  assertRivalFairness(rivals, roundResources, baseMap);
+  rivals = buildRivals(created.sharedMap, seed, rivalRoundResources);
+  assertRivalFairness(rivals, rivalRoundResources, created.sharedMap);
   phase = waitForWelcome ? "welcome" : "build";
-  if (!waitForWelcome) buildDeadline = performance.now() + BUILD_DURATION_MS;
+  if (!waitForWelcome) {
+    buildDeadline = performance.now() + currentFloor.buildDurationMs;
+  }
+  canvasNeedsResize = true;
+  document.body.dataset.floor = String(roundNumber);
+  document.body.dataset.floorWidth = String(currentFloor.width);
+  document.body.dataset.floorHeight = String(currentFloor.height);
+  document.body.dataset.buildDurationMs = String(currentFloor.buildDurationMs);
   dom.seed.textContent = seed;
   const shapeLabel = MAP_SHAPE_LABELS[baseMap.mapShape] ?? baseMap.mapShape;
   dom.shape.textContent = shapeLabel;
@@ -381,8 +408,8 @@ function initRound(seed, waitForWelcome = false) {
 
 function beginBuild() {
   phase = "build";
-  buildRemainingMs = BUILD_DURATION_MS;
-  buildDeadline = performance.now() + BUILD_DURATION_MS;
+  buildRemainingMs = currentFloor.buildDurationMs;
+  buildDeadline = performance.now() + currentFloor.buildDurationMs;
   dom.phaseBanner.textContent = "Build phase";
   window.setTimeout(() => {
     if (phase === "build") dom.phaseBanner.textContent = "";
@@ -400,6 +427,53 @@ function beginBuild() {
     `${MAP_SHAPE_LABELS[baseMap.mapShape] ?? baseMap.mapShape} field · ${roundResources.gold} gold · ${roundResources.tears} ${roundResources.tears === 1 ? "Tear" : "Tears"} of the Runner${towerNotes.length > 0 ? ` · ${towerNotes.join(" · ")}` : ""}.`,
     "neutral",
   );
+  tone("start");
+}
+
+function ownedAugmentCopy() {
+  const names = activeAugmentNames();
+  return names.length > 0
+    ? `Owned: ${names.join(" · ")}`
+    : "No augments owned yet.";
+}
+
+function openAugmentDraft() {
+  if (roundNumber >= totalRounds) return;
+  phase = "augment";
+  pendingAugmentChoices = draftAugmentChoices(
+    contestSeed,
+    roundNumber,
+    selectedAugments,
+  );
+  dom.augmentEyebrow.textContent = `Floor ${roundNumber} cleared · ${totalRounds - roundNumber} remaining`;
+  dom.augmentChoices.innerHTML = pendingAugmentChoices
+    .map((augmentId) => {
+      const augment = AUGMENTS[augmentId];
+      return `
+        <button class="augment-choice" type="button" data-augment="${augment.id}">
+          <span class="augment-icon" aria-hidden="true">${augment.icon}</span>
+          <span><strong>${augment.name}</strong><small>${augment.description}</small></span>
+          <b>Choose</b>
+        </button>`;
+    })
+    .join("");
+  dom.augmentOwned.textContent = ownedAugmentCopy();
+  document.body.dataset.phase = phase;
+  document.body.dataset.augmentChoices = JSON.stringify(pendingAugmentChoices);
+  openModal(dom.augmentModal, dom.augmentChoices.querySelector("button"));
+}
+
+function chooseAugment(augmentId) {
+  if (phase !== "augment" || !pendingAugmentChoices.includes(augmentId)) return;
+  selectedAugments.push(augmentId);
+  pendingAugmentChoices = [];
+  document.body.dataset.augments = JSON.stringify(selectedAugments);
+  document.body.dataset.augmentChoices = "[]";
+  closeModal(dom.augmentModal, false);
+  dom.phaseBanner.textContent = "";
+  initRound(deriveContestRoundSeed(contestSeed, roundNumber + 1));
+  window.requestAnimationFrame(() => dom.canvas.focus());
+  showToast(`${AUGMENTS[augmentId].name} acquired for the rest of this run.`, "success");
   tone("start");
 }
 
@@ -433,6 +507,19 @@ function groupProposal(tool, turn, anchor, owner = "player", id = undefined) {
 
 function canAffordTool(tool, state) {
   return tool.cost <= state.gold && tool.tearCost <= (state.tears ?? 0);
+}
+
+function playerTool(toolId) {
+  const tool = SELECTABLE_TOOLS[toolId];
+  if (!tool || !["crate", "fence", "tower"].includes(tool.id)) return tool;
+  return {
+    ...tool,
+    cost: discountedBuildingCost(tool.cost, selectedAugments),
+  };
+}
+
+function activeAugmentNames() {
+  return selectedAugments.map((augmentId) => AUGMENTS[augmentId].name);
 }
 
 function candidateAnchors(state, seedOrRng, limit, focusRoute = false) {
@@ -765,7 +852,7 @@ function currentPreview() {
   if (phase !== "build" || !hoverCell) return null;
   const cacheKey = `${playerState.revision}:${selectedToolId}:${rotation}:${hoverCell.x},${hoverCell.y}`;
   if (previewCache?.key === cacheKey) return previewCache.value;
-  const tool = SELECTABLE_TOOLS[selectedToolId];
+  const tool = playerTool(selectedToolId);
   const proposal = tool.action === "remove-generated-object"
     ? { cells: [{ ...hoverCell }] }
     : groupProposal(tool, rotation, hoverCell, "player");
@@ -778,13 +865,14 @@ function currentPreview() {
 }
 
 function selectTool(toolId) {
+  const tool = playerTool(toolId);
   if (
-    !SELECTABLE_TOOLS[toolId] ||
+    !tool ||
     phase !== "build" ||
-    !canAffordTool(SELECTABLE_TOOLS[toolId], playerState)
+    !canAffordTool(tool, playerState)
   ) return;
   selectedToolId = toolId;
-  rotation %= SELECTABLE_TOOLS[toolId].rotations;
+  rotation %= tool.rotations;
   previewCache = null;
   updateInterface(true);
   announceCursor();
@@ -792,8 +880,10 @@ function selectTool(toolId) {
 }
 
 function ensureAffordableSelection() {
-  if (canAffordTool(SELECTABLE_TOOLS[selectedToolId], playerState)) return;
-  const affordable = Object.values(SELECTABLE_TOOLS).find((tool) => canAffordTool(tool, playerState));
+  if (canAffordTool(playerTool(selectedToolId), playerState)) return;
+  const affordable = Object.keys(SELECTABLE_TOOLS)
+    .map(playerTool)
+    .find((tool) => canAffordTool(tool, playerState));
   if (affordable) {
     selectedToolId = affordable.id;
     rotation %= affordable.rotations;
@@ -841,11 +931,11 @@ function announceCursor() {
                     : rock
                       ? `generated rock; Delete demolishes it for ${DEMOLISH_TOOL.cost} gold`
                       : "empty";
-  dom.cursorStatus.textContent = `Column ${keyboardCell.x + 1}, row ${keyboardCell.y + 1}: ${special}. ${SELECTABLE_TOOLS[selectedToolId].name} selected.`;
+  dom.cursorStatus.textContent = `Column ${keyboardCell.x + 1}, row ${keyboardCell.y + 1}: ${special}. ${playerTool(selectedToolId).name} selected.`;
 }
 
 function rotateTool() {
-  const tool = SELECTABLE_TOOLS[selectedToolId];
+  const tool = playerTool(selectedToolId);
   if (phase !== "build" || tool.rotations === 1) return;
   rotation = (rotation + 1) % tool.rotations;
   previewCache = null;
@@ -856,7 +946,7 @@ function rotateTool() {
 
 function placeAt(cell) {
   if (phase !== "build") return;
-  const tool = SELECTABLE_TOOLS[selectedToolId];
+  const tool = playerTool(selectedToolId);
   if (tool.action === "remove-generated-object") {
     removeGeneratedAt(cell);
     return;
@@ -1050,7 +1140,7 @@ async function copyChallengeLink(button, includeResult = false) {
         ? "Challenge copied, but localhost only works on this computer. Publish the site before sending it."
         : includeResult && contestIsComplete()
           ? "Your score challenge is ready to send."
-          : "Challenge link copied. Everyone will receive the same rounds.",
+          : "Challenge link copied. Everyone will receive the same four-floor run and augment drafts.",
       isLocalChallengeLink() ? "neutral" : "success",
     );
   } catch {
@@ -1114,11 +1204,12 @@ function displayedContestant() {
 
 function updateCanvasLabel(contestant = displayedContestant()) {
   if (!contestant || !baseMap) return;
-  const shapeLabel = MAP_SHAPE_LABELS[baseMap.mapShape] ?? baseMap.mapShape;
+  const state = contestant.state;
+  const shapeLabel = MAP_SHAPE_LABELS[state.mapShape] ?? state.mapShape;
   const owner = contestant.isPlayer ? "your maze" : `${contestant.name}'s maze`;
   dom.canvas.setAttribute(
     "aria-label",
-    `Viewing ${owner} on a ${shapeLabel} field, ${GRID_WIDTH} columns by ${GRID_HEIGHT} rows, seed ${roundSeed}, ${baseMap.endlessFeast ? "Endless Feast checkpoint present" : "no Endless Feast checkpoint"}, ${baseMap.baseSlowTowers?.length ?? 0} neutral slow towers, ${baseMap.baseSpeedTowers?.length ?? 0} neutral speed towers`,
+    `Viewing ${owner} on a ${shapeLabel} field, ${state.width} columns by ${state.height} rows, seed ${roundSeed}, ${state.endlessFeast ? "Endless Feast checkpoint present" : "no Endless Feast checkpoint"}, ${state.baseSlowTowers?.length ?? 0} neutral slow towers, ${state.baseSpeedTowers?.length ?? 0} neutral speed towers`,
   );
 }
 
@@ -1219,7 +1310,7 @@ function leaderboardMarkup() {
       } else if (phase === "run") {
         ({ detail, score } = runningLeaderboardValues(contestant));
       } else if (phase === "results") {
-        detail = `Round ${roundNumber}: +${formatSeconds(contestant.state.scoreMs)} · ${completedRounds} ${completedRounds === 1 ? "round" : "rounds"}`;
+        detail = `Floor ${roundNumber}: +${formatSeconds(contestant.state.scoreMs)} · ${completedRounds}/${totalRounds} cleared`;
         score = formatSeconds(contestant.totalScoreMs);
       }
       const rank = isSpectating ? "&#9673;" : showRanks ? contestant.rank : "·";
@@ -1291,7 +1382,22 @@ function updateInterface(force = false) {
 
   dom.gold.textContent = Math.round(viewedState.gold);
   dom.tears.textContent = Math.round(viewedState.tears ?? 0);
-  dom.timer.textContent = phase === "build" ? formatClock(buildRemainingMs) : phase === "welcome" ? "1:00" : "0:00";
+  dom.timer.textContent = phase === "build"
+    ? formatClock(buildRemainingMs)
+    : phase === "welcome"
+      ? formatClock(currentFloor.buildDurationMs)
+      : "0:00";
+  const augmentNames = activeAugmentNames();
+  dom.augmentValue.textContent = String(augmentNames.length);
+  dom.activeAugmentChip.title = augmentNames.length > 0
+    ? `Active augments: ${augmentNames.join(", ")}`
+    : "No augments selected yet";
+  const speedTowersConverted = selectedAugments.includes(AUGMENT_IDS.CORRUPT_SPEED);
+  dom.speedTowerNote.hidden = speedTowersConverted;
+  dom.speedTowerRule.hidden = speedTowersConverted;
+  dom.slowTowerRule.innerHTML = selectedAugments.includes(AUGMENT_IDS.WIDE_LAMENT)
+    ? "<b>Tower of Lament:</b> any adjacent tile, including diagonals, triggers 50% speed for 5 seconds, followed by its 5-second recharge."
+    : "<b>Tower of Lament:</b> an orthogonally adjacent tile triggers 50% speed for 5 seconds, followed by its 5-second recharge.";
   dom.route.textContent = formatDistance(routeDistance(viewedState));
   dom.estimate.textContent = (viewedState.scoreMs / 1000).toFixed(1);
   dom.placed.textContent = placedPieceCount(viewedState);
@@ -1320,22 +1426,22 @@ function updateInterface(force = false) {
         : `${viewedContestant.name}'s route has no added distance or tower effects.`;
 
   if (phase === "build" || phase === "welcome") {
-    dom.phaseKicker.textContent = `Round ${roundNumber} of ${totalRounds} · Build phase`;
+    dom.phaseKicker.textContent = `Floor ${roundNumber} of ${totalRounds} · ${currentFloor.width}×${currentFloor.height} · Build phase`;
     dom.phaseTitle.textContent = "Make their journey miserable.";
     const shapeName = (MAP_SHAPE_LABELS[playerState.mapShape] ?? playerState.mapShape).toLowerCase();
     dom.phaseDescription.textContent = playerState.endlessFeast
       ? `Route every runner through Endless Feast before the portal on this ${shapeName} field. You may build around it, but one side and both route legs must stay open.`
-      : `Shape a route across this ${shapeName} field, but always leave one way from the gate to the portal. Every second adds to your contest total.`;
+      : `Shape a route across this ${shapeName} field, but always leave one way from the gate to the portal. Every second adds to your run total.`;
     dom.runButton.innerHTML = 'Release runners <span aria-hidden="true">▶</span>';
-    dom.standingNote.textContent = `Round ${roundNumber}/${totalRounds}`;
+    dom.standingNote.textContent = `Floor ${roundNumber}/${totalRounds}`;
   } else if (phase === "countdown") {
-    dom.phaseKicker.textContent = `Round ${roundNumber} of ${totalRounds} · Mazes locked`;
+    dom.phaseKicker.textContent = `Floor ${roundNumber} of ${totalRounds} · Mazes locked`;
     dom.phaseTitle.textContent = "The runners take their marks.";
     dom.phaseDescription.textContent = "Every route is fixed. No more obstacles may be placed.";
     dom.runButton.textContent = "Mazes locked";
     dom.standingNote.textContent = "Ready";
   } else if (phase === "run") {
-    dom.phaseKicker.textContent = `Round ${roundNumber} of ${totalRounds} · Race underway`;
+    dom.phaseKicker.textContent = `Floor ${roundNumber} of ${totalRounds} · Race underway`;
     dom.phaseTitle.textContent = viewedContestant.isPlayer
       ? "Every wasted second counts."
       : `Watching ${viewedContestant.name}'s maze.`;
@@ -1344,13 +1450,13 @@ function updateInterface(force = false) {
     dom.standingNote.textContent = "Choose to watch";
   } else {
     dom.phaseKicker.textContent = contestIsComplete()
-      ? `Contest complete · ${totalRounds} ${totalRounds === 1 ? "round" : "rounds"}`
-      : `Round ${roundNumber} of ${totalRounds} · Complete`;
-    dom.phaseTitle.textContent = contestIsComplete() ? "The contest has spoken." : "The maze has spoken.";
+      ? `Run complete · ${totalRounds} floors`
+      : `Floor ${roundNumber} of ${totalRounds} · Complete`;
+    dom.phaseTitle.textContent = contestIsComplete() ? "The descent has spoken." : "The floor has spoken.";
     dom.phaseDescription.textContent = contestIsComplete()
-      ? "The highest cumulative runner time wins the contest."
-      : "Round times are banked toward the cumulative contest total.";
-    dom.runButton.textContent = contestIsComplete() ? "Contest complete" : "Round complete";
+      ? "The highest cumulative runner time wins the run."
+      : "Choose one lasting augment before descending to the next floor.";
+    dom.runButton.textContent = contestIsComplete() ? "Run complete" : "Floor complete";
     dom.standingNote.textContent = "Cumulative";
   }
 
@@ -1370,7 +1476,7 @@ function updateInterface(force = false) {
   dom.runButton.disabled = controlsLocked;
   dom.undoButton.disabled = controlsLocked || actionHistory.length === 0;
   for (const card of dom.toolCards) {
-    const tool = SELECTABLE_TOOLS[card.dataset.tool];
+    const tool = playerTool(card.dataset.tool);
     const selected = card.dataset.tool === selectedToolId;
     const locked = controlsLocked || !canAffordTool(tool, playerState);
     card.classList.toggle("selected", selected);
@@ -1378,6 +1484,13 @@ function updateInterface(force = false) {
     card.setAttribute("aria-pressed", String(selected));
     card.disabled = locked;
     card.setAttribute("aria-disabled", String(locked));
+    const costLabel = card.querySelector("[data-tool-cost]");
+    if (costLabel) costLabel.textContent = `${tool.cost} ◆`;
+    if (tool.id === "slowTower") {
+      card.title = selectedAugments.includes(AUGMENT_IDS.WIDE_LAMENT)
+        ? "Costs 1 Tear. Slows a runner entering any of the eight adjacent tiles."
+        : "Costs 1 Tear. Slows a runner entering an orthogonally adjacent tile.";
+    }
   }
   dom.rotationHint.textContent = phase === "run"
     ? `Watching ${viewedContestant.name} · select a contestant to switch`
@@ -1385,7 +1498,7 @@ function updateInterface(force = false) {
       ? "Mazes locked"
       : selectedToolId === DEMOLISH_TOOL.id
         ? `Select a generated object · ${DEMOLISH_TOOL.cost} gold`
-        : SELECTABLE_TOOLS[selectedToolId].rotations > 1
+        : playerTool(selectedToolId).rotations > 1
           ? "R to rotate"
           : "Choose a multi-tile piece to rotate";
   updateLeaderboard();
@@ -1444,39 +1557,39 @@ function finishRound() {
     return `${values.slice(0, -1).join(", ")} and ${values.at(-1)}`;
   };
 
-  dom.phaseBanner.textContent = complete ? "Contest complete" : "Round complete";
+  dom.phaseBanner.textContent = complete ? "Run complete" : "Floor complete";
   document.body.dataset.contestComplete = String(complete);
   dom.resultEmblem.textContent = complete && contestWon ? "♛" : roundWon ? "♛" : "◆";
 
   if (complete) {
     const sharedContest = cumulativeWinners.length > 1;
-    dom.resultEyebrow.textContent = `Contest complete · ${totalRounds} ${totalRounds === 1 ? "round" : "rounds"}`;
+    dom.resultEyebrow.textContent = `Run complete · ${totalRounds} floors cleared`;
     dom.resultTitle.textContent = contestWon
       ? sharedContest
-        ? "You share the contest victory."
-        : "You win the contest."
+        ? "You share the run victory."
+        : "You conquered the descent."
       : sharedContest
-        ? `${names(cumulativeWinners)} share the contest.`
-        : `${cumulativeWinners[0].name} wins the contest.`;
+        ? `${names(cumulativeWinners)} share the run.`
+        : `${cumulativeWinners[0].name} conquers the run.`;
     dom.resultCopy.textContent = contestWon
-      ? `Your runners accumulated ${formatSeconds(playerCumulativeResult.totalScoreMs)} across ${completedRounds} ${completedRounds === 1 ? "round" : "rounds"}${sharedContest ? ", tying for the highest total" : " — the highest cumulative time in the field"}.`
+      ? `Your runners accumulated ${formatSeconds(playerCumulativeResult.totalScoreMs)} across all ${completedRounds} floors${sharedContest ? ", tying for the highest total" : " — the highest cumulative time in the field"}.`
       : `Your cumulative time was ${formatSeconds(playerCumulativeResult.totalScoreMs)}, placing ${playerCumulativeResult.rank}${ordinalSuffix(playerCumulativeResult.rank)} overall. ${names(cumulativeWinners)} finished with ${formatSeconds(cumulativeWinners[0].totalScoreMs)}.`;
-    dom.nextRoundButton.textContent = "Choose a new contest";
-    dom.replayRoundButton.textContent = "Replay final seed";
+    dom.nextRoundButton.textContent = "Begin a new run";
+    dom.replayRoundButton.textContent = "Replay final floor as a new run";
     dom.resultShareButton.textContent = "Copy my score challenge";
   } else {
     const sharedRound = roundWinners.length > 1;
-    dom.resultEyebrow.textContent = `Round ${roundNumber} of ${totalRounds} complete`;
+    dom.resultEyebrow.textContent = `Floor ${roundNumber} of ${totalRounds} cleared`;
     dom.resultTitle.textContent = roundWon
       ? sharedRound
-        ? "A hard-earned round tie."
-        : "You take the round."
+        ? "A hard-earned floor tie."
+        : "You take the floor."
       : sharedRound
-        ? `${names(roundWinners)} share the round.`
-        : `${roundWinners[0].name} takes the round.`;
-    dom.resultCopy.textContent = `You banked ${formatSeconds(playerRoundResult.state.scoreMs)} this round for ${formatSeconds(playerCumulativeResult.totalScoreMs)} total. ${names(cumulativeWinners)} ${cumulativeWinners.length === 1 ? "leads" : "lead"} the contest with ${formatSeconds(cumulativeWinners[0].totalScoreMs)}.`;
-    dom.nextRoundButton.textContent = `Build round ${roundNumber + 1}`;
-    dom.replayRoundButton.textContent = "Replay seed as new contest";
+        ? `${names(roundWinners)} share the floor.`
+        : `${roundWinners[0].name} takes the floor.`;
+    dom.resultCopy.textContent = `You banked ${formatSeconds(playerRoundResult.state.scoreMs)} on this floor for ${formatSeconds(playerCumulativeResult.totalScoreMs)} total. ${names(cumulativeWinners)} ${cumulativeWinners.length === 1 ? "leads" : "lead"} the run with ${formatSeconds(cumulativeWinners[0].totalScoreMs)}.`;
+    dom.nextRoundButton.textContent = "Choose an augment";
+    dom.replayRoundButton.textContent = "Replay floor as a new run";
     dom.resultShareButton.textContent = "Copy challenge link";
   }
 
@@ -1496,7 +1609,7 @@ function finishRound() {
       (entry) => `
         <div${entry.isPlayer ? ' class="you"' : ""}>
           <span>${entry.rank}</span>
-          <span>${entry.name}<small>Round ${roundNumber}: +${formatSeconds(entry.state.scoreMs)} · ${completedRounds} ${completedRounds === 1 ? "round" : "rounds"} total</small></span>
+          <span>${entry.name}<small>Floor ${roundNumber}: +${formatSeconds(entry.state.scoreMs)} · ${completedRounds}/${totalRounds} cleared</small></span>
           <strong>${formatSeconds(entry.totalScoreMs)}</strong>
         </div>`,
     )
@@ -1559,12 +1672,15 @@ function resizeCanvas() {
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
   const paddingX = Math.max(22, rect.width * 0.045);
   const paddingY = Math.max(28, rect.height * 0.07);
+  const boardState = renderState ?? displayedContestant().state;
+  const gridWidth = boardState.width;
+  const gridHeight = boardState.height;
   const cellSize = Math.min(
-    (rect.width - paddingX * 2) / GRID_WIDTH,
-    (rect.height - paddingY * 2) / GRID_HEIGHT,
+    (rect.width - paddingX * 2) / gridWidth,
+    (rect.height - paddingY * 2) / gridHeight,
   );
-  const boardWidth = cellSize * GRID_WIDTH;
-  const boardHeight = cellSize * GRID_HEIGHT;
+  const boardWidth = cellSize * gridWidth;
+  const boardHeight = cellSize * gridHeight;
   geometry = {
     width: rect.width,
     height: rect.height,
@@ -1584,7 +1700,7 @@ function canvasCellFromPointer(event) {
   const localY = event.clientY - rect.top;
   const x = Math.floor((localX - geometry.left) / geometry.cell);
   const y = Math.floor((localY - geometry.top) / geometry.cell);
-  if (x < 0 || y < 0 || x >= GRID_WIDTH || y >= GRID_HEIGHT) return null;
+  if (x < 0 || y < 0 || x >= playerState.width || y >= playerState.height) return null;
   return { x, y };
 }
 
@@ -1605,8 +1721,8 @@ function drawGround(now) {
   const { left, top, boardWidth, boardHeight, cell } = geometry;
   const voidKeys = new Set((renderState.voidCells ?? []).map(cellKey));
   const playableCells = [];
-  for (let y = 0; y < GRID_HEIGHT; y += 1) {
-    for (let x = 0; x < GRID_WIDTH; x += 1) {
+  for (let y = 0; y < renderState.height; y += 1) {
+    for (let x = 0; x < renderState.width; x += 1) {
       if (!voidKeys.has(`${x},${y}`)) playableCells.push({ x, y });
     }
   }
@@ -1692,8 +1808,8 @@ function drawGround(now) {
       const neighborOutside =
         neighborX < 0 ||
         neighborY < 0 ||
-        neighborX >= GRID_WIDTH ||
-        neighborY >= GRID_HEIGHT ||
+        neighborX >= renderState.width ||
+        neighborY >= renderState.height ||
         voidKeys.has(`${neighborX},${neighborY}`);
       if (!neighborOutside) continue;
       context.moveTo(
@@ -1886,14 +2002,23 @@ function speedTowerEntries() {
 
 function drawSlowTowerInfluence(now) {
   const pulse = 0.035 + (Math.sin(now / 420) + 1) * 0.015;
+  const influenceOffsets = [
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 0, y: -1 },
+    ...(renderState.rules.slowTowerAffectsDiagonals
+      ? [
+          { x: 1, y: 1 },
+          { x: 1, y: -1 },
+          { x: -1, y: 1 },
+          { x: -1, y: -1 },
+        ]
+      : []),
+  ];
   context.save();
   for (const tower of slowTowerEntries()) {
-    for (const offset of [
-      { x: 1, y: 0 },
-      { x: -1, y: 0 },
-      { x: 0, y: 1 },
-      { x: 0, y: -1 },
-    ]) {
+    for (const offset of influenceOffsets) {
       const cell = { x: tower.x + offset.x, y: tower.y + offset.y };
       if (!isPlayableCell(renderState, cell)) continue;
       const x = geometry.left + cell.x * geometry.cell;
@@ -2362,9 +2487,9 @@ function drawPlacementGhost() {
 }
 
 function draw(now) {
-  if (!geometry || canvasNeedsResize) resizeCanvas();
   renderContestant = displayedContestant();
   renderState = renderContestant.state;
+  if (!geometry || canvasNeedsResize) resizeCanvas();
   const animationTime = reducedMotion.matches ? 0 : now;
   context.clearRect(0, 0, geometry.width, geometry.height);
   drawGround(animationTime);
@@ -2425,8 +2550,8 @@ dom.nextRoundButton.addEventListener("click", () => {
   if (contestIsComplete()) {
     isSharedChallenge = false;
     challengeTargetMs = null;
-    dom.roundCount.disabled = false;
-    dom.roundCountHelp.textContent = "Choose 1–20 rounds. The highest cumulative runner time wins.";
+    dom.roundCount.disabled = true;
+    dom.roundCountHelp.textContent = "Four floors. Each grows by 2×2 cells and grants 20 more build seconds.";
     dom.challengeTarget.hidden = true;
     document.body.dataset.sharedChallenge = "false";
     const cleanUrl = new URL(window.location.href);
@@ -2436,9 +2561,7 @@ dom.nextRoundButton.addEventListener("click", () => {
     prepareContest(makeSeed(), true);
     openModal(dom.welcomeModal, dom.startButton);
   } else {
-    initRound(deriveContestRoundSeed(contestSeed, roundNumber + 1));
-    window.requestAnimationFrame(() => dom.canvas.focus());
-    tone("start");
+    openAugmentDraft();
   }
 });
 dom.replayRoundButton.addEventListener("click", () => {
@@ -2460,6 +2583,11 @@ dom.welcomeShareButton.addEventListener("click", (event) => {
 });
 dom.resultShareButton.addEventListener("click", (event) => {
   copyChallengeLink(event.currentTarget, contestIsComplete());
+});
+dom.augmentChoices.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-augment]");
+  if (!button || !dom.augmentChoices.contains(button)) return;
+  chooseAugment(button.dataset.augment);
 });
 
 dom.canvas.addEventListener("pointermove", (event) => {
@@ -2560,8 +2688,8 @@ window.addEventListener("keydown", (event) => {
   if (movement) {
     event.preventDefault();
     keyboardCell = {
-      x: Math.max(0, Math.min(GRID_WIDTH - 1, keyboardCell.x + movement[0])),
-      y: Math.max(0, Math.min(GRID_HEIGHT - 1, keyboardCell.y + movement[1])),
+      x: Math.max(0, Math.min(playerState.width - 1, keyboardCell.x + movement[0])),
+      y: Math.max(0, Math.min(playerState.height - 1, keyboardCell.y + movement[1])),
     };
     hoverCell = { ...keyboardCell };
     previewCache = null;
@@ -2583,16 +2711,16 @@ new ResizeObserver(() => {
 }).observe(dom.canvas);
 
 const skipIntro = query.has("skipIntro");
-dom.roundCount.min = String(MIN_CONTEST_ROUNDS);
-dom.roundCount.max = String(MAX_CONTEST_ROUNDS);
+dom.roundCount.min = String(RUN_FLOORS);
+dom.roundCount.max = String(RUN_FLOORS);
 dom.roundCount.value = String(totalRounds);
-if (isSharedChallenge) {
-  dom.roundCount.disabled = true;
-  dom.roundCountHelp.textContent = "Challenge length is locked so every friend receives the same rounds.";
-}
+dom.roundCount.disabled = true;
+dom.roundCountHelp.textContent = isSharedChallenge
+  ? "Challenge depth is locked: every friend receives the same four-floor run."
+  : "Four floors. Each grows by 2×2 cells and grants 20 more build seconds.";
 dom.challengeTarget.hidden = challengeTargetMs === null;
 if (challengeTargetMs !== null) {
-  dom.challengeTarget.textContent = `Friend challenge: beat ${formatSeconds(challengeTargetMs)} across ${totalRounds} ${totalRounds === 1 ? "round" : "rounds"}.`;
+  dom.challengeTarget.textContent = `Friend challenge: beat ${formatSeconds(challengeTargetMs)} across all ${totalRounds} floors.`;
 }
 document.body.dataset.sharedChallenge = String(isSharedChallenge);
 updateStartButtonLabel(totalRounds);

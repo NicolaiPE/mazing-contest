@@ -220,6 +220,18 @@ h1 {
   text-shadow: 0 0 12px rgba(141, 187, 98, 0.28);
 }
 
+.augment-chip {
+  border-color: rgba(186, 128, 231, 0.52);
+  background:
+    radial-gradient(circle at 22% 20%, rgba(177, 111, 226, 0.17), transparent 52%),
+    linear-gradient(180deg, rgba(26, 16, 34, 0.9), rgba(17, 11, 24, 0.96));
+}
+
+.augment-chip strong {
+  color: #ddb8ff;
+  text-shadow: 0 0 12px rgba(186, 128, 231, 0.48);
+}
+
 .resource-chip {
   display: inline-flex;
   min-height: 42px;
@@ -1661,7 +1673,8 @@ footer kbd,
 }
 
 .modal-crest,
-.result-emblem {
+.result-emblem,
+.augment-emblem {
   display: grid;
   width: 66px;
   height: 66px;
@@ -1773,6 +1786,102 @@ footer kbd,
 .result-emblem {
   color: var(--gold);
   font-size: 1.7rem;
+}
+
+.augment-card {
+  max-width: 650px;
+}
+
+.augment-emblem {
+  color: #e0b7ff;
+  font-size: 1.65rem;
+  background: radial-gradient(circle at 34% 28%, #705080, #34203e 70%);
+}
+
+.augment-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.modal-card .augment-choice {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px 12px;
+  min-width: 0;
+  min-height: 142px;
+  margin: 0;
+  padding: 15px;
+  border-color: rgba(86, 50, 104, 0.48);
+  color: #3f2949;
+  text-align: left;
+  text-transform: none;
+  background:
+    radial-gradient(circle at 12% 20%, rgba(147, 90, 175, 0.16), transparent 45%),
+    linear-gradient(145deg, rgba(255, 248, 220, 0.5), rgba(187, 158, 199, 0.26));
+}
+
+.modal-card .augment-choice:hover:not(:disabled),
+.modal-card .augment-choice:focus-visible {
+  border-color: #84529e;
+  filter: brightness(1.04);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.34), 0 6px 15px rgba(57, 31, 69, 0.22);
+}
+
+.augment-choice .augment-icon {
+  display: grid;
+  grid-row: 1 / span 2;
+  width: 54px;
+  height: 54px;
+  place-items: center;
+  border: 1px solid rgba(88, 49, 105, 0.5);
+  border-radius: 50%;
+  color: #f1dcff;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 850;
+  background: linear-gradient(145deg, #815493, #3d2848);
+  box-shadow: inset 0 0 0 3px rgba(39, 22, 47, 0.24), 0 4px 9px rgba(46, 25, 57, 0.24);
+}
+
+.augment-choice strong,
+.augment-choice small {
+  display: block;
+}
+
+.augment-choice strong {
+  color: #3e2749;
+  font-family: var(--font-display);
+  font-size: 1rem;
+  letter-spacing: 0.02em;
+}
+
+.augment-choice small {
+  margin-top: 4px;
+  color: #695072;
+  font-size: 0.68rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.augment-choice > b {
+  grid-column: 1 / -1;
+  padding-top: 8px;
+  border-top: 1px solid rgba(86, 50, 104, 0.2);
+  color: #6d3e80;
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.modal-card .augment-owned {
+  margin: 15px 0 0;
+  color: #684e70;
+  font-size: 0.66rem;
+  font-weight: 700;
 }
 
 .result-board {
@@ -1932,6 +2041,14 @@ footer kbd,
 
   .topbar .share-button {
     width: 100%;
+  }
+
+  .augment-choices {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-card .augment-choice {
+    min-height: 112px;
   }
 
   .field-status-bar .status-cluster {

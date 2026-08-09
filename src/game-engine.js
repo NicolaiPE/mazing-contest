@@ -70,6 +70,7 @@ export const DEFAULT_GAME_CONFIG = Object.freeze({
   slowSpeedMultiplier: 0.5,
   slowDurationMs: 5_000,
   slowTowerCooldownMs: 5_000,
+  slowTowerAffectsDiagonals: false,
   slowTowerSpawnChances: DEFAULT_SLOW_TOWER_SPAWN_CHANCES,
   speedSpeedMultiplier: 2,
   speedDurationMs: 5_000,
@@ -575,6 +576,9 @@ function simulationRules(options) {
       options.slowDurationMs ?? DEFAULT_GAME_CONFIG.slowDurationMs,
     slowTowerCooldownMs:
       options.slowTowerCooldownMs ?? DEFAULT_GAME_CONFIG.slowTowerCooldownMs,
+    slowTowerAffectsDiagonals:
+      options.slowTowerAffectsDiagonals ??
+      DEFAULT_GAME_CONFIG.slowTowerAffectsDiagonals,
     speedSpeedMultiplier:
       options.speedSpeedMultiplier ?? DEFAULT_GAME_CONFIG.speedSpeedMultiplier,
     speedDurationMs:
@@ -598,6 +602,9 @@ function simulationRules(options) {
   ) {
     throw new RangeError("slowTowerCooldownMs must be a non-negative number.");
   }
+  if (typeof rules.slowTowerAffectsDiagonals !== "boolean") {
+    throw new TypeError("slowTowerAffectsDiagonals must be a boolean.");
+  }
   if (
     !Number.isFinite(rules.speedSpeedMultiplier) ||
     rules.speedSpeedMultiplier < 1
@@ -612,7 +619,7 @@ function simulationRules(options) {
 
 /**
  * Produces an authoritative, deterministic runner timeline. Slow and speed
- * towers apply when the runner arrives on a cardinally adjacent cell
+ * towers normally apply when the runner arrives on a cardinally adjacent cell
  * (including the initial cell at t=0, but excluding the goal where the run is
  * over). Effects of the same kind refresh rather than stack. Slow and speed
  * multiply, so the defaults of 0.5x and 2x cancel while both are active.
@@ -690,9 +697,12 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
     if (pathIndex >= copiedPath.length - 1) return;
     const enteredCell = copiedPath[pathIndex];
     for (const tower of rules.slowDurationMs === 0 ? [] : towers) {
-      const distance =
-        Math.abs(tower.x - enteredCell.x) + Math.abs(tower.y - enteredCell.y);
-      if (distance !== 1) continue;
+      const xDistance = Math.abs(tower.x - enteredCell.x);
+      const yDistance = Math.abs(tower.y - enteredCell.y);
+      const isAdjacent = rules.slowTowerAffectsDiagonals
+        ? Math.max(xDistance, yDistance) === 1
+        : xDistance + yDistance === 1;
+      if (!isAdjacent) continue;
       const nextReadyAtMs = nextReadyAtByTower.get(tower.id);
       if (elapsedMs + epsilon < nextReadyAtMs) continue;
 
@@ -1602,6 +1612,9 @@ function rulesFromOptions(options) {
       options.slowDurationMs ?? DEFAULT_GAME_CONFIG.slowDurationMs,
     slowTowerCooldownMs:
       options.slowTowerCooldownMs ?? DEFAULT_GAME_CONFIG.slowTowerCooldownMs,
+    slowTowerAffectsDiagonals:
+      options.slowTowerAffectsDiagonals ??
+      DEFAULT_GAME_CONFIG.slowTowerAffectsDiagonals,
     speedSpeedMultiplier:
       options.speedSpeedMultiplier ?? DEFAULT_GAME_CONFIG.speedSpeedMultiplier,
     speedDurationMs:

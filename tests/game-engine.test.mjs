@@ -39,6 +39,87 @@ import {
   normalizeChallengeSeed,
   parseChallengeTarget,
 } from "../src/challenge.js";
+import {
+  AUGMENT_IDS,
+  RUN_FLOORS,
+  applyMapAugments,
+  applyResourceAugments,
+  discountedBuildingCost,
+  draftAugmentChoices,
+  floorConfig,
+} from "../src/roguelike.js";
+
+test("roguelike floors grow by 2x2 and grant 20 more build seconds", () => {
+  assert.equal(RUN_FLOORS, 4);
+  assert.deepEqual(
+    Array.from({ length: RUN_FLOORS }, (_, index) => floorConfig(index + 1)),
+    [
+      { floorNumber: 1, width: 20, height: 15, buildDurationMs: 60_000 },
+      { floorNumber: 2, width: 22, height: 17, buildDurationMs: 80_000 },
+      { floorNumber: 3, width: 24, height: 19, buildDurationMs: 100_000 },
+      { floorNumber: 4, width: 26, height: 21, buildDurationMs: 120_000 },
+    ],
+  );
+});
+
+test("roguelike augment drafts are deterministic, unique, and persistent", () => {
+  const firstDraft = draftAugmentChoices("AUGMENT-RUN", 1);
+  assert.deepEqual(firstDraft, draftAugmentChoices("AUGMENT-RUN", 1));
+  assert.equal(firstDraft.length, 2);
+  assert.equal(new Set(firstDraft).size, 2);
+
+  const owned = [firstDraft[0]];
+  const secondDraft = draftAugmentChoices("AUGMENT-RUN", 2, owned);
+  assert(!secondDraft.includes(firstDraft[0]));
+  assert.equal(
+    applyResourceAugments(
+      { gold: 90, tears: 1 },
+      [AUGMENT_IDS.BONUS_GOLD],
+    ).gold,
+    140,
+  );
+  assert.equal(
+    discountedBuildingCost(10, [AUGMENT_IDS.CHEAP_BUILDINGS]),
+    8,
+  );
+
+  const converted = applyMapAugments(
+    {
+      baseSlowTowers: [{ x: 1, y: 1 }],
+      baseSpeedTowers: [{ x: 3, y: 2 }],
+      requestedSlowTowerCount: 1,
+      requestedSpeedTowerCount: 1,
+      speedTowerSpawnChance: 0.25,
+    },
+    [AUGMENT_IDS.CORRUPT_SPEED],
+  );
+  assert.deepEqual(converted.baseSpeedTowers, []);
+  assert.deepEqual(converted.baseSlowTowers, [
+    { x: 1, y: 1 },
+    { x: 3, y: 2 },
+  ]);
+});
+
+test("wide Lament fields also trigger from diagonal tiles", () => {
+  const path = [
+    { x: 0, y: 0 },
+    { x: 1, y: 1 },
+    { x: 2, y: 2 },
+  ];
+  const towers = [{ x: 2, y: 0, id: "diagonal-lament" }];
+  const cardinalOnly = calculateRunnerSimulation(path, towers, {
+    stepDurationMs: 1_000,
+    turnPenaltyMs: 0,
+  });
+  const wideLament = calculateRunnerSimulation(path, towers, {
+    stepDurationMs: 1_000,
+    turnPenaltyMs: 0,
+    slowTowerAffectsDiagonals: true,
+  });
+  assert.equal(cardinalOnly.slowApplications.length, 0);
+  assert.equal(wideLament.slowApplications.length, 1);
+  assert(wideLament.travelTimeMs > cardinalOnly.travelTimeMs);
+});
 
 test("challenge links deterministically define every round and validate targets", () => {
   assert.equal(normalizeChallengeSeed("  friend-42  "), "FRIEND-42");

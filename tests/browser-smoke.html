@@ -37,6 +37,15 @@
         normalizeChallengeSeed,
         parseChallengeTarget,
       } from "../src/challenge.js";
+      import {
+        AUGMENT_IDS,
+        RUN_FLOORS,
+        applyMapAugments,
+        applyResourceAugments,
+        discountedBuildingCost,
+        draftAugmentChoices,
+        floorConfig,
+      } from "../src/roguelike.js";
 
       const result = document.querySelector("#result");
       const checks = [];
@@ -48,6 +57,50 @@
         Math.abs(first - second) <= epsilon;
 
       try {
+        assert(
+          RUN_FLOORS === 4 &&
+            JSON.stringify(Array.from({ length: 4 }, (_, index) => floorConfig(index + 1))) ===
+              JSON.stringify([
+                { floorNumber: 1, width: 20, height: 15, buildDurationMs: 60_000 },
+                { floorNumber: 2, width: 22, height: 17, buildDurationMs: 80_000 },
+                { floorNumber: 3, width: 24, height: 19, buildDurationMs: 100_000 },
+                { floorNumber: 4, width: 26, height: 21, buildDurationMs: 120_000 },
+              ]),
+          "roguelike floors grow by 2x2 and grant 20 more build seconds",
+        );
+        const firstAugmentDraft = draftAugmentChoices("BROWSER-RUN", 1);
+        const convertedAugmentMap = applyMapAugments(
+          { baseSlowTowers: [{ x: 1, y: 1 }], baseSpeedTowers: [{ x: 3, y: 2 }] },
+          [AUGMENT_IDS.CORRUPT_SPEED],
+        );
+        assert(
+          firstAugmentDraft.length === 2 &&
+            new Set(firstAugmentDraft).size === 2 &&
+            JSON.stringify(firstAugmentDraft) ===
+              JSON.stringify(draftAugmentChoices("BROWSER-RUN", 1)) &&
+            applyResourceAugments({ gold: 90, tears: 1 }, [AUGMENT_IDS.BONUS_GOLD]).gold === 140 &&
+            discountedBuildingCost(10, [AUGMENT_IDS.CHEAP_BUILDINGS]) === 8 &&
+            convertedAugmentMap.baseSpeedTowers.length === 0 &&
+            convertedAugmentMap.baseSlowTowers.length === 2,
+          "augment drafts and persistent effects are deterministic",
+        );
+        const diagonalPath = [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 2 }];
+        const diagonalTower = [{ x: 2, y: 0, id: "browser-diagonal-lament" }];
+        const cardinalLament = calculateRunnerSimulation(diagonalPath, diagonalTower, {
+          stepDurationMs: 1_000,
+          turnPenaltyMs: 0,
+        });
+        const wideLament = calculateRunnerSimulation(diagonalPath, diagonalTower, {
+          stepDurationMs: 1_000,
+          turnPenaltyMs: 0,
+          slowTowerAffectsDiagonals: true,
+        });
+        assert(
+          cardinalLament.slowApplications.length === 0 &&
+            wideLament.slowApplications.length === 1 &&
+            wideLament.travelTimeMs > cardinalLament.travelTimeMs,
+          "Echoing Lament slows all eight adjacent tiles",
+        );
         const spectatorContestants = [
           { id: "player", isPlayer: true, state: { route: ["player"] } },
           { id: "bramble", state: { route: ["bramble"] } },
@@ -538,11 +591,16 @@
             }, { once: true });
           });
           const appDocument = appFrame.contentDocument;
+          const appWindow = appFrame.contentWindow;
           assert(
             appDocument.body.dataset.contestSeed === "SPECTATORCLICK" &&
               appDocument.body.dataset.sharedChallenge === "true" &&
               appDocument.querySelector("#roundCountInput")?.disabled === true &&
-              appDocument.querySelector("#challengeTarget")?.textContent.includes("12.3s"),
+              appDocument.querySelector("#challengeTarget")?.textContent.includes("12.3s") &&
+              appDocument.body.dataset.contestRounds === "4" &&
+              appDocument.body.dataset.floorWidth === "20" &&
+              appDocument.body.dataset.floorHeight === "15" &&
+              appDocument.body.dataset.buildDurationMs === "60000",
             "shared challenge links lock the contest and display the score to beat",
           );
           const rivalAiStats = JSON.parse(appDocument.body.dataset.rivalAiStats ?? "[]");
@@ -587,6 +645,47 @@
           assert(
             spectatorClickWorked,
             "contestant names remain stable and clickable across race ticks",
+          );
+
+          let acceleratedNow = appWindow.performance.now();
+          appWindow.requestAnimationFrame = (callback) =>
+            appWindow.setTimeout(() => callback((acceleratedNow += 10_000)), 0);
+          const resultsReached = await new Promise((resolve) => {
+            const timeoutAt = window.performance.now() + 5_000;
+            const checkPhase = () => {
+              if (appDocument.body.dataset.phase === "results") {
+                resolve(true);
+              } else if (window.performance.now() >= timeoutAt) {
+                resolve(false);
+              } else {
+                window.setTimeout(checkPhase, 25);
+              }
+            };
+            checkPhase();
+          });
+          appDocument.querySelector("#nextRoundButton")?.click();
+          const draftButtons = [
+            ...appDocument.querySelectorAll("#augmentChoices [data-augment]"),
+          ];
+          const draftOpened =
+            resultsReached &&
+            appDocument.body.dataset.phase === "augment" &&
+            appDocument.querySelector("#augmentModal")?.classList.contains("open") &&
+            draftButtons.length === 2 &&
+            new Set(draftButtons.map((button) => button.dataset.augment)).size === 2;
+          const chosenAugment = draftButtons[0]?.dataset.augment;
+          draftButtons[0]?.click();
+          assert(
+            draftOpened &&
+              appDocument.body.dataset.phase === "build" &&
+              appDocument.body.dataset.floor === "2" &&
+              appDocument.body.dataset.floorWidth === "22" &&
+              appDocument.body.dataset.floorHeight === "17" &&
+              appDocument.body.dataset.buildDurationMs === "80000" &&
+              JSON.parse(appDocument.body.dataset.augments ?? "[]").includes(chosenAugment) &&
+              appDocument.querySelector("#augmentValue")?.textContent === "1" &&
+              !appDocument.body.dataset.appError,
+            "clearing a floor opens a two-card augment draft and starts the larger next floor",
           );
         } finally {
           appFrame.remove();
