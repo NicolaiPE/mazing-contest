@@ -36,6 +36,7 @@ import {
   draftAugmentChoices,
   floorConfig,
 } from "./roguelike.js";
+import { fitBoardGeometry } from "./canvas-geometry.js";
 
 const ROCK_DENSITY = 0.115;
 const MIN_STARTING_GOLD = 80;
@@ -90,7 +91,7 @@ const TOOLS = Object.freeze({
 
 const DEMOLISH_TOOL = Object.freeze({
   id: "demolish",
-  name: "Demolish generated object",
+  name: "Demolish rock or slow tower",
   cost: DEFAULT_GENERATED_OBJECT_REMOVAL_COST,
   tearCost: 0,
   rotations: 1,
@@ -128,7 +129,7 @@ const RIVAL_SPECS = Object.freeze([
 const FAILURE_COPY = Object.freeze({
   "invalid-cell": "That is not a buildable cell.",
   "out-of-bounds": "The whole piece must stay inside the field.",
-  "protected-cell": "The entrance, portal, and Endless Feast tile are protected.",
+  "protected-cell": "Entrances, portals, trap doors, and Endless Feast are protected.",
   occupied: "Something already occupies that space.",
   "insufficient-gold": "You do not have enough gold for that action.",
   "blocks-path": "Sacred rule: one route must always remain open.",
@@ -138,7 +139,7 @@ const FAILURE_COPY = Object.freeze({
   "duplicate-cell": "A footprint cannot cover the same cell twice.",
   "duplicate-group-id": "That obstacle has already been placed.",
   "invalid-group": "That obstacle footprint is invalid.",
-  "no-generated-object": "Choose a rock or neutral tower generated with this field.",
+  "no-generated-object": "Choose a generated rock or neutral slow tower. Other floor objects cannot be removed.",
   "outside-map": "That cell lies outside this floor's playable shape.",
 });
 
@@ -417,11 +418,18 @@ function beginBuild() {
   updateInterface(true);
   const neutralSlowCount = baseMap.baseSlowTowers?.length ?? 0;
   const neutralSpeedCount = baseMap.baseSpeedTowers?.length ?? 0;
+  const trapDoorCount = baseMap.baseTrapDoors?.length ?? 0;
   const towerNotes = [];
   if (neutralSlowCount > 0) {
     towerNotes.push(`${neutralSlowCount} neutral slow ${neutralSlowCount === 1 ? "tower" : "towers"}`);
   }
-  if (neutralSpeedCount > 0) towerNotes.push("1 neutral speed tower");
+  if (neutralSpeedCount > 0) {
+    towerNotes.push(`${neutralSpeedCount} neutral speed ${neutralSpeedCount === 1 ? "tower" : "towers"}`);
+  }
+  if ((baseMap.portalPair?.length ?? 0) === 2) towerNotes.push("linked portal pair");
+  if (trapDoorCount > 0) {
+    towerNotes.push(`${trapDoorCount} trap ${trapDoorCount === 1 ? "door" : "doors"}`);
+  }
   if (baseMap.endlessFeast) towerNotes.unshift("Endless Feast checkpoint");
   showToast(
     `${MAP_SHAPE_LABELS[baseMap.mapShape] ?? baseMap.mapShape} field · ${roundResources.gold} gold · ${roundResources.tears} ${roundResources.tears === 1 ? "Tear" : "Tears"} of the Runner${towerNotes.length > 0 ? ` · ${towerNotes.join(" · ")}` : ""}.`,
@@ -815,6 +823,8 @@ function assertRivalFairness(entries, resources, sharedBaseMap) {
   const sharedVoidCells = JSON.stringify(sharedBaseMap.voidCells ?? []);
   const sharedSlowTowers = JSON.stringify(sharedBaseMap.baseSlowTowers ?? []);
   const sharedSpeedTowers = JSON.stringify(sharedBaseMap.baseSpeedTowers ?? []);
+  const sharedPortalPair = JSON.stringify(sharedBaseMap.portalPair ?? []);
+  const sharedTrapDoors = JSON.stringify(sharedBaseMap.baseTrapDoors ?? []);
   const valid = entries.every(
     (entry) =>
       entry.state.startingGold === resources.gold &&
@@ -830,6 +840,8 @@ function assertRivalFairness(entries, resources, sharedBaseMap) {
         JSON.stringify(sharedBaseMap.endlessFeast ?? null) &&
       JSON.stringify(entry.state.baseSlowTowers ?? []) === sharedSlowTowers &&
       JSON.stringify(entry.state.baseSpeedTowers ?? []) === sharedSpeedTowers &&
+      JSON.stringify(entry.state.portalPair ?? []) === sharedPortalPair &&
+      JSON.stringify(entry.state.baseTrapDoors ?? []) === sharedTrapDoors &&
       entry.state.scoreMs === entry.state.runnerSimulation?.travelTimeMs,
   );
   const planningValid = entries.every(
@@ -906,6 +918,12 @@ function announceCursor() {
   const neutralSpeedTower = (cursorState.baseSpeedTowers ?? []).some(
     (entry) => entry.x === keyboardCell.x && entry.y === keyboardCell.y,
   );
+  const portalEnd = (cursorState.portalPair ?? []).some(
+    (entry) => entry.x === keyboardCell.x && entry.y === keyboardCell.y,
+  );
+  const trapDoor = (cursorState.baseTrapDoors ?? []).some(
+    (entry) => entry.x === keyboardCell.x && entry.y === keyboardCell.y,
+  );
   const outsideShape = !isPlayableCell(cursorState, keyboardCell);
   const feast = cursorState.endlessFeast &&
     keyboardCell.x === cursorState.endlessFeast.x &&
@@ -925,8 +943,12 @@ function announceCursor() {
               : neutralSlowTower
                 ? `generated neutral Tower of Lament; Delete demolishes it for ${DEMOLISH_TOOL.cost} gold`
                 : neutralSpeedTower
-                  ? `generated neutral speed tower; Delete demolishes it for ${DEMOLISH_TOOL.cost} gold`
-                  : occupant
+                  ? "fixed neutral speed tower; it cannot be removed"
+                  : portalEnd
+                    ? "one end of the linked one-use portal; it cannot be removed"
+                    : trapDoor
+                      ? "one-use trap door; it cannot be removed"
+                      : occupant
                     ? `${occupant.groupType} obstacle; Delete removes it`
                     : rock
                       ? `generated rock; Delete demolishes it for ${DEMOLISH_TOOL.cost} gold`
@@ -1010,7 +1032,6 @@ function removeAt(cell) {
 
 function generatedObjectName(type) {
   if (type === "slow-tower") return "Neutral Tower of Lament";
-  if (type === "speed-tower") return "Neutral speed tower";
   return "Rock";
 }
 
@@ -1049,7 +1070,6 @@ function removeTargetAt(cell) {
     const generatedObject = [
       ...playerState.baseRocks,
       ...(playerState.baseSlowTowers ?? []),
-      ...(playerState.baseSpeedTowers ?? []),
     ].some((entry) => entry.x === cell.x && entry.y === cell.y);
     if (generatedObject) removeGeneratedAt(cell);
   }
@@ -1209,7 +1229,7 @@ function updateCanvasLabel(contestant = displayedContestant()) {
   const owner = contestant.isPlayer ? "your maze" : `${contestant.name}'s maze`;
   dom.canvas.setAttribute(
     "aria-label",
-    `Viewing ${owner} on a ${shapeLabel} field, ${state.width} columns by ${state.height} rows, seed ${roundSeed}, ${state.endlessFeast ? "Endless Feast checkpoint present" : "no Endless Feast checkpoint"}, ${state.baseSlowTowers?.length ?? 0} neutral slow towers, ${state.baseSpeedTowers?.length ?? 0} neutral speed towers`,
+    `Viewing ${owner} on a ${shapeLabel} field, ${state.width} columns by ${state.height} rows, seed ${roundSeed}, ${state.endlessFeast ? "Endless Feast checkpoint present" : "no Endless Feast checkpoint"}, ${state.baseSlowTowers?.length ?? 0} neutral slow towers, ${state.baseSpeedTowers?.length ?? 0} neutral speed towers, ${(state.portalPair?.length ?? 0) === 2 ? "linked portal present" : "no linked portal"}, ${state.baseTrapDoors?.length ?? 0} trap doors`,
   );
 }
 
@@ -1497,7 +1517,7 @@ function updateInterface(force = false) {
     : phase !== "build" && phase !== "welcome"
       ? "Mazes locked"
       : selectedToolId === DEMOLISH_TOOL.id
-        ? `Select a generated object · ${DEMOLISH_TOOL.cost} gold`
+        ? `Select a generated rock or slow tower · ${DEMOLISH_TOOL.cost} gold`
         : playerTool(selectedToolId).rotations > 1
           ? "R to rotate"
           : "Choose a multi-tile piece to rotate";
@@ -1670,31 +1690,41 @@ function resizeCanvas() {
     dom.canvas.height = height;
   }
   context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  const paddingX = Math.max(22, rect.width * 0.045);
-  const paddingY = Math.max(28, rect.height * 0.07);
   const boardState = renderState ?? displayedContestant().state;
   const gridWidth = boardState.width;
   const gridHeight = boardState.height;
-  const cellSize = Math.min(
-    (rect.width - paddingX * 2) / gridWidth,
-    (rect.height - paddingY * 2) / gridHeight,
+  geometry = fitBoardGeometry(
+    rect.width,
+    rect.height,
+    gridWidth,
+    gridHeight,
+    ratio,
   );
-  const boardWidth = cellSize * gridWidth;
-  const boardHeight = cellSize * gridHeight;
-  geometry = {
-    width: rect.width,
-    height: rect.height,
-    cell: cellSize,
-    left: (rect.width - boardWidth) / 2,
-    top: (rect.height - boardHeight) / 2,
-    boardWidth,
-    boardHeight,
-  };
+  const tolerance = 1 / ratio;
+  const boardFits =
+    geometry.left >= tolerance &&
+    geometry.top >= tolerance &&
+    geometry.right <= geometry.width - tolerance &&
+    geometry.bottom <= geometry.height - tolerance;
+  dom.canvas.dataset.boardFits = String(boardFits);
+  dom.canvas.dataset.boardBounds = [
+    geometry.left,
+    geometry.top,
+    geometry.right,
+    geometry.bottom,
+  ].map((value) => value.toFixed(2)).join(",");
   canvasNeedsResize = false;
 }
 
 function canvasCellFromPointer(event) {
-  if (!geometry || canvasNeedsResize) resizeCanvas();
+  if (
+    !geometry ||
+    canvasNeedsResize ||
+    geometry.gridWidth !== playerState.width ||
+    geometry.gridHeight !== playerState.height
+  ) {
+    resizeCanvas();
+  }
   const rect = dom.canvas.getBoundingClientRect();
   const localX = event.clientX - rect.left;
   const localY = event.clientY - rect.top;
@@ -1829,12 +1859,21 @@ function drawGround(now) {
 function drawRoute(now) {
   const route = renderState.route;
   if (!route?.length) return;
+  const teleportTransitions = new Set(
+    (renderState.runnerSimulation?.segments ?? [])
+      .filter((segment) => segment.type === "teleport")
+      .map((segment) => `${segment.fromIndex}:${segment.toIndex}`),
+  );
   context.save();
   context.beginPath();
   route.forEach((cell, index) => {
     const point = cellCenter(cell);
     if (index === 0) context.moveTo(point.x, point.y);
-    else context.lineTo(point.x, point.y);
+    else {
+      const isPortalJump = teleportTransitions.has(`${index - 1}:${index}`);
+      if (isPortalJump) context.moveTo(point.x, point.y);
+      else context.lineTo(point.x, point.y);
+    }
   });
   context.setLineDash([geometry.cell * 0.18, geometry.cell * 0.16]);
   context.lineDashOffset = -(now / 80) % (geometry.cell * 0.34);
@@ -2240,6 +2279,82 @@ function drawSpeedTower(cell, now) {
   context.restore();
 }
 
+function portalHasDeactivated() {
+  if (phase !== "run" && phase !== "results") return false;
+  return (renderState.runnerSimulation?.portalApplications ?? []).some(
+    (application) => application.atMs <= runElapsedMs,
+  );
+}
+
+function drawLinkedPortal(cell, index, now) {
+  const point = cellCenter(cell);
+  const size = geometry.cell;
+  const inactive = portalHasDeactivated();
+  const pulse = inactive ? 1 : 1 + Math.sin(now / 190 + index * Math.PI) * 0.08;
+  context.save();
+  context.translate(point.x, point.y);
+  context.globalAlpha = inactive ? 0.42 : 1;
+  const glow = context.createRadialGradient(0, 0, 0, 0, 0, size * 0.5);
+  glow.addColorStop(0, inactive ? "rgba(90,96,106,.2)" : "rgba(204,139,255,.44)");
+  glow.addColorStop(1, "rgba(71,38,120,0)");
+  context.fillStyle = glow;
+  context.beginPath();
+  context.arc(0, 0, size * 0.5 * pulse, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = inactive ? "#72777e" : index === 0 ? "#c98cff" : "#70d9ff";
+  context.lineWidth = Math.max(2, size * 0.065);
+  context.shadowColor = context.strokeStyle;
+  context.shadowBlur = inactive ? 0 : size * 0.22;
+  context.beginPath();
+  context.ellipse(0, 0, size * 0.31 * pulse, size * 0.2, 0, 0, Math.PI * 2);
+  context.stroke();
+  context.shadowBlur = 0;
+  context.strokeStyle = inactive ? "#4e5258" : "rgba(229,238,255,.82)";
+  context.lineWidth = Math.max(1, size * 0.025);
+  context.beginPath();
+  context.ellipse(0, 0, size * 0.21, size * 0.12, 0, 0, Math.PI * 2);
+  context.stroke();
+  context.fillStyle = inactive ? "#a8acb1" : "#f3e6ff";
+  context.font = `800 ${Math.max(8, size * 0.16)}px ui-sans-serif, system-ui, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(inactive ? "OFF" : index === 0 ? "A" : "B", 0, 0);
+  context.restore();
+}
+
+function drawTrapDoor(cell, now) {
+  const point = cellCenter(cell);
+  const size = geometry.cell;
+  const application = (renderState.runnerSimulation?.trapDoorApplications ?? [])
+    .find(
+      (entry) =>
+        entry.trapDoor.x === cell.x &&
+        entry.trapDoor.y === cell.y &&
+        entry.atMs <= runElapsedMs,
+    );
+  const inactive = (phase === "run" || phase === "results") && Boolean(application);
+  context.save();
+  context.translate(point.x, point.y);
+  context.rotate(inactive ? -0.16 : 0);
+  context.shadowColor = inactive ? "rgba(0,0,0,.3)" : "rgba(255,148,56,.55)";
+  context.shadowBlur = inactive ? 0 : size * (0.12 + Math.sin(now / 250) * 0.025);
+  context.fillStyle = inactive ? "#25231f" : "#624323";
+  context.strokeStyle = inactive ? "#5c554a" : "#d99b4a";
+  context.lineWidth = Math.max(1.5, size * 0.045);
+  context.fillRect(-size * 0.32, -size * 0.32, size * 0.64, size * 0.64);
+  context.strokeRect(-size * 0.32, -size * 0.32, size * 0.64, size * 0.64);
+  context.shadowBlur = 0;
+  context.strokeStyle = inactive ? "#111" : "rgba(255,218,142,.62)";
+  context.lineWidth = Math.max(1, size * 0.025);
+  for (const offset of [-0.16, 0, 0.16]) {
+    context.beginPath();
+    context.moveTo(-size * 0.26, size * offset);
+    context.lineTo(size * 0.26, size * offset);
+    context.stroke();
+  }
+  context.restore();
+}
+
 function drawEndlessFeast(cell, now) {
   if (!cell) return;
   const point = cellCenter(cell);
@@ -2301,6 +2416,10 @@ function drawObstacles(now) {
   for (const rock of renderState.baseRocks) drawRock(rock);
   for (const tower of renderState.baseSlowTowers ?? []) drawSlowTower({ ...tower, neutral: true }, now);
   for (const tower of renderState.baseSpeedTowers ?? []) drawSpeedTower({ ...tower, neutral: true }, now);
+  for (const [index, portal] of (renderState.portalPair ?? []).entries()) {
+    drawLinkedPortal(portal, index, now);
+  }
+  for (const trapDoor of renderState.baseTrapDoors ?? []) drawTrapDoor(trapDoor, now);
   drawEndlessFeast(renderState.endlessFeast, now);
   for (const obstacle of renderState.obstacles) {
     if (obstacle.groupType === "fence") drawFence(obstacle, obstacle);
@@ -2424,7 +2543,7 @@ function drawRunner() {
     context.textBaseline = "bottom";
     context.shadowColor = "rgba(16, 70, 39, .95)";
     context.shadowBlur = 4;
-    context.fillText("HASTED +100%", 0, -size * 0.39);
+    context.fillText("HASTED +50%", 0, -size * 0.39);
     context.shadowBlur = 0;
   }
   if (insatiablyHungry) {
@@ -2489,7 +2608,14 @@ function drawPlacementGhost() {
 function draw(now) {
   renderContestant = displayedContestant();
   renderState = renderContestant.state;
-  if (!geometry || canvasNeedsResize) resizeCanvas();
+  if (
+    !geometry ||
+    canvasNeedsResize ||
+    geometry.gridWidth !== renderState.width ||
+    geometry.gridHeight !== renderState.height
+  ) {
+    resizeCanvas();
+  }
   const animationTime = reducedMotion.matches ? 0 : now;
   context.clearRect(0, 0, geometry.width, geometry.height);
   drawGround(animationTime);

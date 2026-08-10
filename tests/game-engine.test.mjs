@@ -5,7 +5,9 @@ import {
   CELL_TYPES,
   DEFAULT_ENDLESS_FEAST_SPAWN_CHANCE,
   DEFAULT_MAP_SHAPES,
+  DEFAULT_PORTAL_SPAWN_CHANCE,
   DEFAULT_SPEED_TOWER_SPAWN_CHANCE,
+  DEFAULT_SPEED_TOWER_SPAWN_CHANCES,
   MAP_SHAPES,
   PLACEMENT_FAILURES,
   buildRivalMaze,
@@ -33,6 +35,7 @@ import {
   rankCumulativeScores,
 } from "../src/contest-scoring.js";
 import { resolveSpectatedContestant } from "../src/spectator.js";
+import { fitBoardGeometry } from "../src/canvas-geometry.js";
 import {
   createChallengeUrl,
   deriveContestRoundSeed,
@@ -406,8 +409,9 @@ test("slow tower count chances use a rock-independent deterministic RNG stream",
   assert.equal(forcedTwoByChance.baseSlowTowers.length, 2);
 });
 
-test("speed towers use an independent deterministic 25% spawn roll", () => {
+test("speed towers use the same deterministic count chances as slow towers", () => {
   assert.equal(DEFAULT_SPEED_TOWER_SPAWN_CHANCE, 0.25);
+  assert.deepEqual(DEFAULT_SPEED_TOWER_SPAWN_CHANCES, [0.58, 0.36, 0.06]);
   const first = generateBaseMap({
     seed: "speed-count-stream",
     width: 12,
@@ -422,9 +426,10 @@ test("speed towers use an independent deterministic 25% spawn roll", () => {
     rockDensity: 0.25,
     slowTowerCount: 0,
   });
-  assert.equal(first.speedTowerSpawnChance, 0.25);
+  assert.equal(first.speedTowerSpawnChance, null);
+  assert.deepEqual(first.speedTowerSpawnChances, first.slowTowerSpawnChances);
   assert.equal(first.requestedSpeedTowerCount, second.requestedSpeedTowerCount);
-  assert(first.requestedSpeedTowerCount === 0 || first.requestedSpeedTowerCount === 1);
+  assert(first.requestedSpeedTowerCount >= 0 && first.requestedSpeedTowerCount <= 2);
 });
 
 test("a forced neutral speed tower blocks its cell and preserves the route", () => {
@@ -449,10 +454,196 @@ test("a forced neutral speed tower blocks its cell and preserves the route", () 
 
   const state = createGameState({ baseMap: first, startingGold: 100 });
   assert.equal(createCellGrid(state)[tower.y][tower.x], CELL_TYPES.SPEED_TOWER);
-  assert.throws(
-    () => generateBaseMap({ ...options, speedTowerCount: 2 }),
-    /either 0 or 1/,
+  assert.equal(
+    generateBaseMap({ ...options, speedTowerCount: 2 }).baseSpeedTowers.length,
+    2,
   );
+});
+
+test("every floor fits inside common canvas sizes at high pixel density", () => {
+  for (const [viewWidth, viewHeight] of [
+    [320, 240],
+    [640, 480],
+    [1_000, 750],
+    [1_280, 720],
+  ]) {
+    for (const pixelRatio of [1, 1.25, 2]) {
+      for (let floorNumber = 1; floorNumber <= RUN_FLOORS; floorNumber += 1) {
+        const floor = floorConfig(floorNumber);
+        const geometry = fitBoardGeometry(
+          viewWidth,
+          viewHeight,
+          floor.width,
+          floor.height,
+          pixelRatio,
+        );
+        assert(geometry.cell > 0);
+        assert(geometry.left >= 0);
+        assert(geometry.top >= 0);
+        assert(geometry.right <= geometry.width);
+        assert(geometry.bottom <= geometry.height);
+      }
+    }
+  }
+});
+
+test("linked portals spawn at 25%, teleport once, and remain protected", () => {
+  assert.equal(DEFAULT_PORTAL_SPAWN_CHANCE, 0.25);
+  const guaranteed = generateBaseMap({
+    seed: "guaranteed-linked-portal",
+    width: 9,
+    height: 5,
+    mapShape: MAP_SHAPES.RECTANGLE,
+    rockDensity: 0,
+    slowTowerCount: 0,
+    speedTowerCount: 0,
+    trapDoorCount: 0,
+    portalSpawnChance: 1,
+  });
+  const absent = generateBaseMap({
+    seed: "no-linked-portal",
+    width: 9,
+    height: 5,
+    mapShape: MAP_SHAPES.RECTANGLE,
+    rockDensity: 0,
+    slowTowerCount: 0,
+    speedTowerCount: 0,
+    trapDoorCount: 0,
+    portalSpawnChance: 0,
+  });
+  assert.equal(guaranteed.portalPair.length, 2);
+  assert.equal(absent.portalPair.length, 0);
+
+  const state = createGameState({
+    baseMap: {
+      width: 7,
+      height: 1,
+      seed: "portal-corridor",
+      start: { x: 0, y: 0 },
+      goal: { x: 6, y: 0 },
+      baseRocks: [],
+      portalPair: [{ x: 1, y: 0 }, { x: 5, y: 0 }],
+    },
+    stepDurationMs: 1_000,
+    turnPenaltyMs: 0,
+  });
+  assert.deepEqual(
+    findShortestPath({
+      width: 7,
+      height: 1,
+      start: { x: 0, y: 0 },
+      goal: { x: 6, y: 0 },
+      blocked: [],
+      portalPair: [{ x: 1, y: 0 }, { x: 5, y: 0 }],
+    }),
+    Array.from({ length: 7 }, (_, x) => ({ x, y: 0 })),
+  );
+  assert.deepEqual(state.route, [
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 5, y: 0 },
+    { x: 6, y: 0 },
+  ]);
+  assert.equal(state.scoreMs, 2_000);
+  assert.equal(state.runnerSimulation.portalApplications.length, 1);
+  assert.equal(state.runnerSimulation.portalApplications[0].atMs, 1_000);
+  assert.equal(
+    createCellGrid(state)[0][1],
+    CELL_TYPES.PORTAL,
+  );
+  const protectedPlacement = tryPlaceObstacle(state, { x: 1, y: 0 });
+  assert.equal(protectedPlacement.ok, false);
+  assert.equal(protectedPlacement.reason, PLACEMENT_FAILURES.PROTECTED_CELL);
+});
+
+test("trap doors use slow-tower rates and launch three squares once", () => {
+  const generated = generateBaseMap({
+    seed: "forced-trap-doors",
+    width: 12,
+    height: 8,
+    mapShape: MAP_SHAPES.RECTANGLE,
+    rockDensity: 0,
+    slowTowerCount: 0,
+    speedTowerCount: 0,
+    portalCount: 0,
+    trapDoorSpawnChances: [0, 0, 1],
+  });
+  assert.equal(generated.baseTrapDoors.length, 2);
+  assert.deepEqual(generated.trapDoorSpawnChances, [0, 0, 1]);
+
+  const state = createGameState({
+    baseMap: {
+      width: 8,
+      height: 1,
+      seed: "trap-corridor",
+      start: { x: 0, y: 0 },
+      goal: { x: 7, y: 0 },
+      baseRocks: [],
+      baseTrapDoors: [{ x: 1, y: 0 }],
+    },
+    stepDurationMs: 1_000,
+    turnPenaltyMs: 0,
+  });
+  assert.deepEqual(state.route.slice(0, 3), [
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 4, y: 0 },
+  ]);
+  assert.equal(state.scoreMs, 5_000);
+  assert.deepEqual(state.runnerSimulation.trapDoorApplications, [
+    {
+      trapDoor: { x: 1, y: 0 },
+      landing: { x: 4, y: 0 },
+      pathIndex: 1,
+      atMs: 1_000,
+    },
+  ]);
+  assert.equal(createCellGrid(state)[0][1], CELL_TYPES.TRAP_DOOR);
+
+  const edgeState = createGameState({
+    baseMap: {
+      width: 5,
+      height: 1,
+      seed: "edge-trap-corridor",
+      start: { x: 0, y: 0 },
+      goal: { x: 4, y: 0 },
+      baseRocks: [],
+      baseTrapDoors: [{ x: 3, y: 0 }],
+    },
+    stepDurationMs: 1_000,
+    turnPenaltyMs: 0,
+  });
+  assert.deepEqual(edgeState.runnerSimulation.trapDoorApplications, [
+    {
+      trapDoor: { x: 3, y: 0 },
+      landing: { x: 4, y: 0 },
+      pathIndex: 3,
+      atMs: 3_000,
+    },
+  ]);
+  assert.equal(edgeState.scoreMs, 4_000);
+});
+
+test("floor effects never attract the runner away from its direct route", () => {
+  const baseMap = {
+    width: 7,
+    height: 3,
+    seed: "ignore-floor-shortcuts",
+    start: { x: 0, y: 1 },
+    goal: { x: 6, y: 1 },
+    baseRocks: [],
+    portalPair: [{ x: 1, y: 0 }, { x: 4, y: 0 }],
+    baseTrapDoors: [{ x: 2, y: 2 }],
+  };
+  const state = createGameState({
+    baseMap,
+    stepDurationMs: 1_000,
+    turnPenaltyMs: 0,
+  });
+  assert.deepEqual(state.route, Array.from({ length: 7 }, (_, x) => ({ x, y: 1 })));
+  assert.equal(state.runnerSimulation.portalApplications.length, 0);
+  assert.equal(state.runnerSimulation.trapDoorApplications.length, 0);
+  assert.equal(state.scoreMs, 6_000);
 });
 
 test("Endless Feast is a deterministic 20% mandatory checkpoint with an open side", () => {
@@ -764,11 +955,12 @@ test("generated field objects can be removed for 8 gold without mutating the rou
   const slowRemoved = tryRemoveGeneratedObject(rockRemoved.state, { x: 1, y: 0 });
   const speedRemoved = tryRemoveGeneratedObject(slowRemoved.state, { x: 3, y: 0 });
   assert.equal(slowRemoved.removedObject.type, CELL_TYPES.SLOW_TOWER);
-  assert.equal(speedRemoved.removedObject.type, CELL_TYPES.SPEED_TOWER);
-  assert.equal(speedRemoved.state.gold, 0);
+  assert.equal(speedRemoved.ok, false);
+  assert.equal(speedRemoved.reason, PLACEMENT_FAILURES.NO_GENERATED_OBJECT);
+  assert.equal(speedRemoved.state.gold, 8);
   assert.equal(speedRemoved.state.baseSlowTowers.length, 0);
-  assert.equal(speedRemoved.state.baseSpeedTowers.length, 0);
-  assert.equal(speedRemoved.state.lastAction.type, "remove-generated-object");
+  assert.equal(speedRemoved.state.baseSpeedTowers.length, 1);
+  assert.equal(speedRemoved.state.lastAction.objectType, CELL_TYPES.SLOW_TOWER);
 
   const missing = tryRemoveGeneratedObject(initial, { x: 4, y: 0 });
   assert.equal(missing.ok, false);
@@ -1219,7 +1411,7 @@ test("a second tower refreshes rather than stacking the shared slow", () => {
   assert.equal(simulation.travelTimeMs, 10_500);
 });
 
-test("a speed tower grants 2x speed for five seconds with mid-edge expiry", () => {
+test("a speed tower grants 1.5x speed for five seconds with mid-edge expiry", () => {
   const path = Array.from({ length: 12 }, (_, x) => ({ x, y: 0 }));
   const simulation = calculateRunnerSimulation(path, [], {
     stepDurationMs: 1_200,
@@ -1228,7 +1420,7 @@ test("a speed tower grants 2x speed for five seconds with mid-edge expiry", () =
   });
 
   assert.equal(simulation.baseTravelTimeMs, 13_200);
-  assert.equal(simulation.travelTimeMs, 8_200);
+  assert.equal(simulation.travelTimeMs, 10_700);
   assert.deepEqual(
     simulation.speedApplications.map(
       ({ towerId, pathIndex, atMs, expiresAtMs, refreshed }) => ({
@@ -1253,7 +1445,7 @@ test("a speed tower grants 2x speed for five seconds with mid-edge expiry", () =
     { startMs: 0, endMs: 5_000, towerIds: ["opening-speed"] },
   ]);
   const atExpiry = getRunnerPositionAtTime(simulation, 5_000);
-  assert(Math.abs(atExpiry.x - 25 / 3) < 1e-9);
+  assert(Math.abs(atExpiry.x - 6.25) < 1e-9);
   assert.equal(atExpiry.y, 0);
   assert.equal(atExpiry.spedUp, false);
   assert.equal(atExpiry.speedMultiplier, 1);
@@ -1316,7 +1508,7 @@ test("speed tower triggers are cardinal on entry, refresh without cooldown, and 
   );
 });
 
-test("slow and speed effects multiply and remain visible when they cancel", () => {
+test("slow and speed effects multiply and remain visible together", () => {
   const path = Array.from({ length: 7 }, (_, x) => ({ x, y: 1 }));
   const simulation = calculateRunnerSimulation(
     path,
@@ -1328,12 +1520,12 @@ test("slow and speed effects multiply and remain visible when they cancel", () =
     },
   );
 
-  assert.equal(simulation.travelTimeMs, 6_000);
+  assert.equal(simulation.travelTimeMs, 7_250);
   const duringBoth = getRunnerPositionAtTime(simulation, 2_000);
   assert.equal(duringBoth.slowed, true);
   assert.equal(duringBoth.spedUp, true);
-  assert.equal(duringBoth.speedMultiplier, 1);
-  assert.equal(duringBoth.x, 2);
+  assert.equal(duringBoth.speedMultiplier, 0.75);
+  assert.equal(duringBoth.x, 1.5);
 });
 
 test("base speed towers feed authoritative state scoring and custom rules", () => {

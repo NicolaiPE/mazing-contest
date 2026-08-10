@@ -163,19 +163,33 @@
                 type="button"
                 data-tool="demolish"
                 aria-pressed="false"
-                title="Remove one rock or neutral tower generated with the field for 8 gold."
+                title="Remove one generated rock or neutral slow tower for 8 gold."
               >
                 <span class="tool-hotkey">5</span>
                 <span class="tool-icon demolish-icon" aria-hidden="true"><i></i></span>
                 <span class="tool-name">Demolish</span>
-                <span class="tool-meta"><b>8 ◆</b> · generated object</span>
+                <span class="tool-meta"><b>8 ◆</b> · rock / slow tower</span>
               </button>
             </div>
             <div class="neutral-tower-note" id="speedTowerNote" role="note" aria-label="Neutral speed tower field event">
               <span class="neutral-tower-icon" aria-hidden="true"><i></i></span>
               <span>
                 <strong>Neutral speed tower</strong>
-                <small>25% chance each floor · adjacent tile grants +100% speed for 5 seconds</small>
+                <small>Same 0/1/2 rates as slow towers · adjacent tile grants +50% speed for 5 seconds · fixed in place</small>
+              </span>
+            </div>
+            <div class="neutral-tower-note portal-note" role="note" aria-label="Linked portal field event">
+              <span class="portal-note-icon" aria-hidden="true">A↔B</span>
+              <span>
+                <strong>Linked portal</strong>
+                <small>25% chance · two linked ends · deactivates after one use</small>
+              </span>
+            </div>
+            <div class="neutral-tower-note trap-note" role="note" aria-label="Trap Door field event">
+              <span class="trap-note-icon" aria-hidden="true">▦</span>
+              <span>
+                <strong>Trap Door</strong>
+                <small>Same 0/1/2 rates as slow towers · launches up to 3 squares forward · one use</small>
               </span>
             </div>
             <div class="neutral-tower-note feast-note" role="note" aria-label="Endless Feast checkpoint event">
@@ -240,8 +254,8 @@
               <strong>Keep one legal route</strong>
               <p>
                 Runners take the shortest route, including diagonals. They may round one object diagonally,
-                but cannot squeeze through when both side tiles are occupied. Demolishing a generated object
-                costs 8 gold; illegal actions cost nothing.
+                but cannot squeeze through when both side tiles are occupied. Demolishing an eligible generated
+                rock or slow tower costs 8 gold; illegal actions cost nothing.
               </p>
               <ul class="effect-rules">
                 <li id="slowTowerRule">
@@ -249,8 +263,16 @@
                   followed by its 5-second recharge.
                 </li>
                 <li id="speedTowerRule">
-                  <b>Neutral speed tower:</b> one appears in 25% of floors and an orthogonally adjacent
-                  tile grants +100% speed for 5 seconds. It is part of the shared map and cannot be built.
+                  <b>Neutral speed tower:</b> uses the same 0/1/2 spawn rates as slow towers. An orthogonally
+                  adjacent tile grants +50% speed for 5 seconds. It cannot be built or removed.
+                </li>
+                <li>
+                  <b>Linked portal:</b> has a 25% chance to place two linked ends. The runner never seeks one,
+                  but entering an end moves it to the other before it reroutes normally. Both ends then deactivate.
+                </li>
+                <li>
+                  <b>Trap Door:</b> uses the slow-tower spawn rates. The runner never seeks one, but crossing it
+                  launches up to three squares forward, stopping at the last valid edge square, then deactivates.
                 </li>
                 <li>
                   <b>Endless Feast:</b> appears in 20% of floors. Every runner must reach the protected
@@ -278,7 +300,8 @@
         </p>
         <p class="modal-field-note">
           Each seed chooses a rectangle, diamond, donut, or flower-petal field. Dark cells outside its
-          silhouette are unplayable. Any generated rock or neutral tower can be demolished for 8 gold.
+          silhouette are unplayable. Generated rocks and neutral slow towers can be demolished for 8 gold;
+          speed towers, linked portals, and trap doors are fixed to the field.
         </p>
         <p class="modal-field-note feast-modal-note">
           In 20% of floors, Endless Feast becomes a mandatory checkpoint before the portal.

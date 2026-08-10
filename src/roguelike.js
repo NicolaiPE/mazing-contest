@@ -120,6 +120,7 @@ export function applyMapAugments(baseMap, augmentIds = []) {
     baseSlowTowers,
     requestedSpeedTowerCount: 0,
     speedTowerSpawnChance: 0,
+    speedTowerSpawnChances: null,
     baseSpeedTowers: [],
   };
 }

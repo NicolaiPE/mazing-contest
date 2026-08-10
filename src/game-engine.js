@@ -11,6 +11,8 @@ export const CELL_TYPES = Object.freeze({
   ROCK: "rock",
   SLOW_TOWER: "slow-tower",
   SPEED_TOWER: "speed-tower",
+  PORTAL: "portal",
+  TRAP_DOOR: "trap-door",
   ENDLESS_FEAST: "endless-feast",
   OBSTACLE: "obstacle",
   START: "start",
@@ -38,6 +40,7 @@ export const PLACEMENT_FAILURES = Object.freeze({
 
 export const DEFAULT_GENERATED_OBJECT_REMOVAL_COST = 8;
 export const DEFAULT_ENDLESS_FEAST_SPAWN_CHANCE = 0.2;
+export const DEFAULT_PORTAL_SPAWN_CHANCE = 0.25;
 
 export const MAP_SHAPES = Object.freeze({
   RECTANGLE: "rectangle",
@@ -55,6 +58,10 @@ export const DEFAULT_SLOW_TOWER_SPAWN_CHANCES = Object.freeze([
 ]);
 
 export const DEFAULT_SPEED_TOWER_SPAWN_CHANCE = 0.25;
+export const DEFAULT_SPEED_TOWER_SPAWN_CHANCES =
+  DEFAULT_SLOW_TOWER_SPAWN_CHANCES;
+export const DEFAULT_TRAP_DOOR_SPAWN_CHANCES =
+  DEFAULT_SLOW_TOWER_SPAWN_CHANCES;
 
 export const DEFAULT_GAME_CONFIG = Object.freeze({
   width: 20,
@@ -72,9 +79,12 @@ export const DEFAULT_GAME_CONFIG = Object.freeze({
   slowTowerCooldownMs: 5_000,
   slowTowerAffectsDiagonals: false,
   slowTowerSpawnChances: DEFAULT_SLOW_TOWER_SPAWN_CHANCES,
-  speedSpeedMultiplier: 2,
+  speedSpeedMultiplier: 1.5,
   speedDurationMs: 5_000,
-  speedTowerSpawnChance: DEFAULT_SPEED_TOWER_SPAWN_CHANCE,
+  speedTowerSpawnChance: null,
+  speedTowerSpawnChances: DEFAULT_SPEED_TOWER_SPAWN_CHANCES,
+  portalSpawnChance: DEFAULT_PORTAL_SPAWN_CHANCE,
+  trapDoorSpawnChances: DEFAULT_TRAP_DOOR_SPAWN_CHANCES,
   endlessFeastSpawnChance: DEFAULT_ENDLESS_FEAST_SPAWN_CHANCE,
 });
 
@@ -294,6 +304,8 @@ function hasOpenEndlessFeastSide(board) {
  * between two diagonally touching obstacles. It accepts
  * either a game state/base map, or a small board descriptor:
  * { width, height, start, goal, blocked }.
+ * Traversable portals and trap doors are intentionally ignored here; their
+ * effects are applied only after an ordinary shortest route enters them.
  *
  * Returns an array including start and goal, or null when no route exists.
  */
@@ -442,6 +454,249 @@ export function hasPath(board, options = {}) {
   return findShortestPath(board, options) !== null;
 }
 
+function trapDoorLandingCell(board, trapDoor, direction) {
+  const blocked = blockedSetFor(board);
+  let landing = cloneCell(trapDoor);
+  for (let distance = 1; distance <= 3; distance += 1) {
+    const candidate = {
+      x: trapDoor.x + direction.x * distance,
+      y: trapDoor.y + direction.y * distance,
+    };
+    if (!isInsideGrid(candidate, board.width, board.height)) break;
+    if ((board.voidCells ?? []).some((cell) => cellsEqual(cell, candidate))) break;
+    if (!blocked.has(cellKey(candidate))) landing = candidate;
+  }
+  return landing;
+}
+
+/**
+ * Builds the runner's actual route without letting floor effects influence its
+ * choices. Each leg first follows an ordinary shortest path toward Endless
+ * Feast or the goal. If a portal or trap moves the runner, a new ordinary
+ * shortest path is calculated from that landing cell.
+ */
+function createReactiveRunnerRoute(board) {
+  const portalPair = board.portalPair ?? [];
+  const trapDoors = board.baseTrapDoors ?? [];
+  const portalIndexByCell = new Map(
+    portalPair.map((cell, index) => [cellKey(cell), index]),
+  );
+  const trapDoorByCell = new Map(trapDoors.map((cell) => [cellKey(cell), cell]));
+  const usedTrapDoors = new Set();
+  const path = [cloneCell(board.start)];
+  const floorObjectTransitions = [];
+  let current = cloneCell(board.start);
+  let feastReached = !board.endlessFeast;
+  let portalUsed = false;
+  const maximumReroutes = trapDoors.length + (portalPair.length === 2 ? 1 : 0) + 3;
+
+  for (let reroute = 0; reroute < maximumReroutes; reroute += 1) {
+    const target = feastReached ? board.goal : board.endlessFeast;
+    if (cellsEqual(current, target)) {
+      if (!feastReached) {
+        feastReached = true;
+        continue;
+      }
+      return { path, floorObjectTransitions };
+    }
+    const directPath = findShortestPath(board, {
+      start: current,
+      goal: target,
+      checkpoint: null,
+    });
+    if (!directPath) return { path: null, floorObjectTransitions: [] };
+
+    let effectApplied = false;
+    for (let index = 1; index < directPath.length; index += 1) {
+      const prior = directPath[index - 1];
+      const entered = directPath[index];
+      const direction = {
+        x: entered.x - prior.x,
+        y: entered.y - prior.y,
+      };
+      path.push(cloneCell(entered));
+      current = cloneCell(entered);
+
+      if (cellsEqual(current, target)) {
+        if (!feastReached) feastReached = true;
+        break;
+      }
+
+      const portalIndex = portalUsed
+        ? undefined
+        : portalIndexByCell.get(cellKey(current));
+      if (portalIndex !== undefined) {
+        const entrance = cloneCell(current);
+        const exit = cloneCell(portalPair[1 - portalIndex]);
+        const fromIndex = path.length - 1;
+        path.push(exit);
+        floorObjectTransitions.push({
+          type: "teleport",
+          fromIndex,
+          toIndex: path.length - 1,
+          entrance,
+          exit: cloneCell(exit),
+          direction: null,
+        });
+        current = exit;
+        portalUsed = true;
+        effectApplied = true;
+        break;
+      }
+
+      const trapDoor = trapDoorByCell.get(cellKey(current));
+      if (trapDoor && !usedTrapDoors.has(cellKey(trapDoor))) {
+        const landing = trapDoorLandingCell(board, trapDoor, direction);
+        const fromIndex = path.length - 1;
+        path.push(cloneCell(landing));
+        floorObjectTransitions.push({
+          type: "launch",
+          fromIndex,
+          toIndex: path.length - 1,
+          trapDoor: cloneCell(trapDoor),
+          landing: cloneCell(landing),
+          direction: { ...direction },
+        });
+        usedTrapDoors.add(cellKey(trapDoor));
+        current = cloneCell(landing);
+        if (!feastReached && cellsEqual(current, board.endlessFeast)) {
+          feastReached = true;
+        }
+        const landingPortalIndex = portalUsed
+          ? undefined
+          : portalIndexByCell.get(cellKey(current));
+        if (landingPortalIndex !== undefined) {
+          const entrance = cloneCell(current);
+          const exit = cloneCell(portalPair[1 - landingPortalIndex]);
+          const portalFromIndex = path.length - 1;
+          path.push(exit);
+          floorObjectTransitions.push({
+            type: "teleport",
+            fromIndex: portalFromIndex,
+            toIndex: path.length - 1,
+            entrance,
+            exit: cloneCell(exit),
+            direction: null,
+          });
+          current = exit;
+          portalUsed = true;
+        }
+        effectApplied = true;
+        break;
+      }
+    }
+
+    if (!effectApplied && feastReached && cellsEqual(current, board.goal)) {
+      return { path, floorObjectTransitions };
+    }
+  }
+
+  throw new Error("Runner route exceeded its bounded floor-effect reroutes.");
+}
+
+function classifyPathTransitions(path, options = {}) {
+  const portalPair = options.portalPair ?? [];
+  const trapDoors = options.trapDoors ?? options.baseTrapDoors ?? [];
+  const portalKeys = new Set(portalPair.map(cellKey));
+  const trapKeys = new Set(trapDoors.map(cellKey));
+  const usedTrapKeys = new Set();
+  let portalUsed = false;
+  const transitions = [];
+  const explicitTransitions = new Map(
+    (options.floorObjectTransitions ?? []).map((transition) => [
+      `${transition.fromIndex}:${transition.toIndex}`,
+      transition,
+    ]),
+  );
+
+  for (let index = 1; index < path.length; index += 1) {
+    const from = path[index - 1];
+    const to = path[index];
+    const deltaX = to.x - from.x;
+    const deltaY = to.y - from.y;
+    const fromKey = cellKey(from);
+    const explicit = explicitTransitions.get(`${index - 1}:${index}`);
+    if (explicit) {
+      if (explicit.type === "teleport") portalUsed = true;
+      if (explicit.type === "launch") usedTrapKeys.add(fromKey);
+      transitions.push({
+        type: explicit.type,
+        from,
+        to,
+        fromIndex: index - 1,
+        toIndex: index,
+        distance: explicit.type === "teleport" ? 0 : 1,
+        direction:
+          explicit.type === "teleport"
+            ? null
+            : { ...explicit.direction },
+      });
+      continue;
+    }
+    const isPortalJump =
+      !portalUsed &&
+      portalPair.length === 2 &&
+      portalKeys.has(fromKey) &&
+      portalKeys.has(cellKey(to)) &&
+      fromKey !== cellKey(to);
+    if (isPortalJump) {
+      portalUsed = true;
+      transitions.push({
+        type: "teleport",
+        from,
+        to,
+        fromIndex: index - 1,
+        toIndex: index,
+        distance: 0,
+        direction: null,
+      });
+      continue;
+    }
+
+    const isTrapLaunch =
+      trapKeys.has(fromKey) &&
+      !usedTrapKeys.has(fromKey) &&
+      Math.max(Math.abs(deltaX), Math.abs(deltaY)) === 3 &&
+      [0, 3].includes(Math.abs(deltaX)) &&
+      [0, 3].includes(Math.abs(deltaY));
+    if (isTrapLaunch) {
+      usedTrapKeys.add(fromKey);
+      transitions.push({
+        type: "launch",
+        from,
+        to,
+        fromIndex: index - 1,
+        toIndex: index,
+        distance: 1,
+        direction: { x: Math.sign(deltaX), y: Math.sign(deltaY) },
+      });
+      continue;
+    }
+
+    const deltaAbsX = Math.abs(deltaX);
+    const deltaAbsY = Math.abs(deltaY);
+    if (
+      deltaAbsX > 1 ||
+      deltaAbsY > 1 ||
+      (deltaAbsX === 0 && deltaAbsY === 0)
+    ) {
+      throw new RangeError(
+        "Consecutive path cells must be neighbours or a configured floor-object transition.",
+      );
+    }
+    transitions.push({
+      type: "move",
+      from,
+      to,
+      fromIndex: index - 1,
+      toIndex: index,
+      distance: Math.hypot(deltaX, deltaY),
+      direction: { x: deltaX, y: deltaY },
+    });
+  }
+  return transitions;
+}
+
 /**
  * Converts a path into the round score. Cardinal edges have distance 1 and
  * diagonal edges have distance sqrt(2); every unit of distance costs
@@ -473,28 +728,18 @@ export function calculateRouteMetrics(path, options = {}) {
     throw new TypeError("path must be a non-empty cell array or null.");
   }
 
-  for (let index = 0; index < path.length; index += 1) {
-    if (!isIntegerCell(path[index])) {
+  for (const cell of path) {
+    if (!isIntegerCell(cell)) {
       throw new TypeError("Every path entry must be an integer cell.");
-    }
-    if (index > 0) {
-      const deltaX = Math.abs(path[index].x - path[index - 1].x);
-      const deltaY = Math.abs(path[index].y - path[index - 1].y);
-      if (deltaX > 1 || deltaY > 1 || (deltaX === 0 && deltaY === 0)) {
-        throw new RangeError(
-          "Consecutive path cells must be cardinal or diagonal neighbours.",
-        );
-      }
     }
   }
 
+  const transitions = classifyPathTransitions(path, options);
   let turns = 0;
   let previousDirection = null;
-  for (let index = 1; index < path.length; index += 1) {
-    const direction = {
-      x: path[index].x - path[index - 1].x,
-      y: path[index].y - path[index - 1].y,
-    };
+  for (const transition of transitions) {
+    const direction = transition.direction;
+    if (direction === null) continue;
     if (
       previousDirection &&
       (direction.x !== previousDirection.x || direction.y !== previousDirection.y)
@@ -505,13 +750,10 @@ export function calculateRouteMetrics(path, options = {}) {
   }
 
   const steps = Math.max(0, path.length - 1);
-  let distance = 0;
-  for (let index = 1; index < path.length; index += 1) {
-    distance += Math.hypot(
-      path[index].x - path[index - 1].x,
-      path[index].y - path[index - 1].y,
-    );
-  }
+  const distance = transitions.reduce(
+    (total, transition) => total + transition.distance,
+    0,
+  );
   return {
     reachable: true,
     steps,
@@ -622,7 +864,7 @@ function simulationRules(options) {
  * towers normally apply when the runner arrives on a cardinally adjacent cell
  * (including the initial cell at t=0, but excluding the goal where the run is
  * over). Effects of the same kind refresh rather than stack. Slow and speed
- * multiply, so the defaults of 0.5x and 2x cancel while both are active.
+ * multiply, so simultaneous effects remain visible and deterministic.
  *
  * `slowTowers` remains the second argument for backwards compatibility;
  * neutral speed towers are supplied as `options.speedTowers`.
@@ -631,6 +873,14 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
   const baseMetrics = calculateRouteMetrics(path, options);
   const towers = normalizedSlowTowers(slowTowers);
   const speedTowers = normalizedSpeedTowers(options.speedTowers ?? []);
+  const portalPair = (options.portalPair ?? []).map(cloneCell);
+  const trapDoors = (options.trapDoors ?? options.baseTrapDoors ?? []).map(cloneCell);
+  const floorObjectTransitions = (options.floorObjectTransitions ?? []).map(
+    (transition) => ({
+      ...transition,
+      direction: transition.direction ? { ...transition.direction } : null,
+    }),
+  );
   const endlessFeast = options.endlessFeast ? cloneCell(options.endlessFeast) : null;
   const rules = simulationRules(options);
 
@@ -643,11 +893,16 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
       feastPathIndex: -1,
       slowTowers: towers,
       speedTowers,
+      portalPair,
+      trapDoors,
+      floorObjectTransitions,
       segments: [],
       slowApplications: [],
       slowWindows: [],
       speedApplications: [],
       speedWindows: [],
+      portalApplications: [],
+      trapDoorApplications: [],
       baseTravelTimeMs: null,
       exactBaseTravelTimeMs: null,
       exactTravelTimeMs: null,
@@ -656,6 +911,11 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
   }
 
   const copiedPath = path.map(cloneCell);
+  const transitions = classifyPathTransitions(copiedPath, {
+    portalPair,
+    trapDoors,
+    floorObjectTransitions,
+  });
   const feastPathIndex = endlessFeast
     ? copiedPath.findIndex((cell) => cellsEqual(cell, endlessFeast))
     : -1;
@@ -664,6 +924,8 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
   const slowWindows = [];
   const speedApplications = [];
   const speedWindows = [];
+  const portalApplications = [];
+  const trapDoorApplications = [];
   const nextReadyAtByTower = new Map(towers.map((tower) => [tower.id, 0]));
   let elapsedMs = 0;
   let slowUntilMs = 0;
@@ -791,22 +1053,23 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
     }
   };
 
-  const appendMove = (from, to, fromIndex) => {
-    const edgeDistance = Math.hypot(to.x - from.x, to.y - from.y);
-    const baseEdgeDurationMs = rules.stepDurationMs * edgeDistance;
+  const appendMove = (transition) => {
+    const { from, to, fromIndex, toIndex, type, distance: scoredDistance } =
+      transition;
+    const baseEdgeDurationMs = rules.stepDurationMs * scoredDistance;
     if (baseEdgeDurationMs === 0) {
       const status = statusAtCurrentTime();
       appendSegment({
-        type: "move",
+        type,
         from: cloneCell(from),
         to: cloneCell(to),
         fromIndex,
-        toIndex: fromIndex + 1,
+        toIndex,
         progressStart: 0,
         progressEnd: 1,
         startMs: elapsedMs,
         endMs: elapsedMs,
-        distance: edgeDistance,
+        distance: scoredDistance,
         slowed: status.slowed,
         spedUp: status.spedUp,
         speedMultiplier: status.speedMultiplier,
@@ -834,16 +1097,16 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
       );
       elapsedMs += partMs;
       appendSegment({
-        type: "move",
+        type,
         from: cloneCell(from),
         to: cloneCell(to),
         fromIndex,
-        toIndex: fromIndex + 1,
+        toIndex,
         progressStart,
         progressEnd: progress,
         startMs,
         endMs: elapsedMs,
-        distance: edgeDistance * (progress - progressStart),
+        distance: scoredDistance * (progress - progressStart),
         slowed: status.slowed,
         spedUp: status.spedUp,
         speedMultiplier: status.speedMultiplier,
@@ -853,19 +1116,43 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
 
   triggerTowersAt(0);
   let previousDirection = null;
-  for (let index = 1; index < copiedPath.length; index += 1) {
-    const from = copiedPath[index - 1];
-    const to = copiedPath[index];
-    const direction = { x: to.x - from.x, y: to.y - from.y };
+  for (const transition of transitions) {
+    const direction = transition.direction;
     if (
+      direction &&
       previousDirection &&
       (direction.x !== previousDirection.x || direction.y !== previousDirection.y)
     ) {
-      appendTurn(rules.turnPenaltyMs, from, index - 1, direction);
+      appendTurn(
+        rules.turnPenaltyMs,
+        transition.from,
+        transition.fromIndex,
+        direction,
+      );
     }
-    appendMove(from, to, index - 1);
-    triggerTowersAt(index);
-    previousDirection = direction;
+    if (transition.type === "teleport") {
+      portalApplications.push({
+        entrance: cloneCell(transition.from),
+        exit: cloneCell(transition.to),
+        pathIndex: transition.fromIndex,
+        atMs: elapsedMs,
+      });
+    } else if (transition.type === "launch") {
+      trapDoorApplications.push({
+        trapDoor: cloneCell(transition.from),
+        landing: cloneCell(transition.to),
+        pathIndex: transition.fromIndex,
+        atMs: elapsedMs,
+      });
+    }
+    appendMove(transition);
+    if (
+      transition.type !== "launch" ||
+      !cellsEqual(transition.from, transition.to)
+    ) {
+      triggerTowersAt(transition.toIndex);
+    }
+    if (direction) previousDirection = direction;
   }
 
   return {
@@ -876,11 +1163,16 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
     feastPathIndex,
     slowTowers: towers,
     speedTowers,
+    portalPair,
+    trapDoors,
+    floorObjectTransitions,
     segments,
     slowApplications,
     slowWindows,
     speedApplications,
     speedWindows,
+    portalApplications,
+    trapDoorApplications,
     baseTravelTimeMs: baseMetrics.travelTimeMs,
     exactBaseTravelTimeMs:
       baseMetrics.distance * rules.stepDurationMs +
@@ -985,7 +1277,7 @@ export function getRunnerPositionAtTime(simulation, elapsedMs) {
       spedUp,
       ...hungerStatus(segment.fromIndex),
       speedMultiplier: currentSpeedMultiplier,
-      segmentType: "move",
+      segmentType: segment.type,
     };
   }
 
@@ -1158,19 +1450,94 @@ function resolveSlowTowerSpawnCount(options, seed) {
 function resolveSpeedTowerSpawnCount(options, seed) {
   const forcedCount = options.speedTowerCount ?? options.forcedSpeedTowerCount;
   if (forcedCount !== undefined) {
+    if (!Number.isSafeInteger(forcedCount) || forcedCount < 0) {
+      throw new RangeError("speedTowerCount must be a non-negative safe integer.");
+    }
+    return { count: forcedCount, forced: true, chance: null, chances: null };
+  }
+
+  if (options.speedTowerSpawnChance !== undefined) {
+    const chance = options.speedTowerSpawnChance;
+    if (!Number.isFinite(chance) || chance < 0 || chance > 1) {
+      throw new RangeError("speedTowerSpawnChance must be between 0 and 1.");
+    }
+    const roll = createSeededRng(`${seed}:base-speed-tower-count`)();
+    return {
+      count: roll < chance ? 1 : 0,
+      forced: false,
+      chance,
+      chances: null,
+    };
+  }
+
+  const chances =
+    options.speedTowerSpawnChances ?? DEFAULT_GAME_CONFIG.speedTowerSpawnChances;
+  const resolved = resolveWeightedObjectSpawnCount(
+    chances,
+    `${seed}:base-speed-tower-count-v2`,
+    "speedTowerSpawnChances",
+  );
+  return { ...resolved, forced: false, chance: null };
+}
+
+function resolveWeightedObjectSpawnCount(chances, seed, optionName) {
+  if (!Array.isArray(chances) || chances.length === 0) {
+    throw new TypeError(`${optionName} must be a non-empty array.`);
+  }
+  let total = 0;
+  const copiedChances = chances.map((chance) => {
+    if (!Number.isFinite(chance) || chance < 0) {
+      throw new RangeError(`Every ${optionName} entry must be non-negative.`);
+    }
+    total += chance;
+    return chance;
+  });
+  if (total <= 0) {
+    throw new RangeError(`${optionName} must contain a positive chance.`);
+  }
+  const roll = createSeededRng(seed)() * total;
+  let cumulative = 0;
+  for (let count = 0; count < copiedChances.length; count += 1) {
+    cumulative += copiedChances[count];
+    if (roll < cumulative) return { count, chances: copiedChances };
+  }
+  return { count: copiedChances.length - 1, chances: copiedChances };
+}
+
+function resolvePortalSpawnCount(options, seed) {
+  const forcedCount = options.portalCount ?? options.forcedPortalCount;
+  if (forcedCount !== undefined) {
     if (!Number.isSafeInteger(forcedCount) || forcedCount < 0 || forcedCount > 1) {
-      throw new RangeError("speedTowerCount must be either 0 or 1.");
+      throw new RangeError("portalCount must be either 0 or 1.");
     }
     return { count: forcedCount, forced: true, chance: null };
   }
-
-  const chance =
-    options.speedTowerSpawnChance ?? DEFAULT_GAME_CONFIG.speedTowerSpawnChance;
+  const chance = options.portalSpawnChance ?? DEFAULT_GAME_CONFIG.portalSpawnChance;
   if (!Number.isFinite(chance) || chance < 0 || chance > 1) {
-    throw new RangeError("speedTowerSpawnChance must be between 0 and 1.");
+    throw new RangeError("portalSpawnChance must be between 0 and 1.");
   }
-  const roll = createSeededRng(`${seed}:base-speed-tower-count`)();
+  const roll = createSeededRng(`${seed}:portal-count-v1`)();
   return { count: roll < chance ? 1 : 0, forced: false, chance };
+}
+
+function resolveTrapDoorSpawnCount(options, seed) {
+  const forcedCount = options.trapDoorCount ?? options.forcedTrapDoorCount;
+  if (forcedCount !== undefined) {
+    if (!Number.isSafeInteger(forcedCount) || forcedCount < 0) {
+      throw new RangeError("trapDoorCount must be a non-negative safe integer.");
+    }
+    return { count: forcedCount, forced: true, chances: null };
+  }
+  const chances =
+    options.trapDoorSpawnChances ?? DEFAULT_GAME_CONFIG.trapDoorSpawnChances;
+  return {
+    ...resolveWeightedObjectSpawnCount(
+      chances,
+      `${seed}:trap-door-count-v1`,
+      "trapDoorSpawnChances",
+    ),
+    forced: false,
+  };
 }
 
 function resolveEndlessFeastSpawnCount(options, seed) {
@@ -1192,10 +1559,11 @@ function resolveEndlessFeastSpawnCount(options, seed) {
 }
 
 /**
- * Builds deterministic base rocks and occasional slow/speed towers. A
+ * Builds deterministic rocks, towers, linked portals, and trap doors. A
  * candidate is retained only if pathfinding confirms the map still has a
  * route, so every seed is playable. Every feature has a domain-separated RNG
- * stream; the speed-tower roll is therefore an independent 25% by default.
+ * stream; speed towers and trap doors use the slow-tower count distribution,
+ * while linked portals use an independent 25% roll.
  */
 export function generateBaseMap(options = {}) {
   const width = options.width ?? DEFAULT_GAME_CONFIG.width;
@@ -1371,6 +1739,93 @@ export function generateBaseMap(options = {}) {
     );
   }
 
+  const occupiedKeys = new Set([
+    ...blocked,
+    ...baseSlowTowers.map(cellKey),
+    ...baseSpeedTowers.map(cellKey),
+  ]);
+  const portalSpawn = resolvePortalSpawnCount(options, seed);
+  const portalCandidates = shuffleDeterministically(
+    candidates.filter((cell) => !occupiedKeys.has(cellKey(cell))),
+    `${seed}:portal-cells-v1`,
+  );
+  let portalPair = [];
+  if (portalSpawn.count === 1) {
+    portalSearch:
+    for (let firstIndex = 0; firstIndex < portalCandidates.length; firstIndex += 1) {
+      for (
+        let secondIndex = firstIndex + 1;
+        secondIndex < portalCandidates.length;
+        secondIndex += 1
+      ) {
+        const trialPair = [
+          cloneCell(portalCandidates[firstIndex]),
+          cloneCell(portalCandidates[secondIndex]),
+        ].sort(compareCells);
+        const trialBoard = {
+          width,
+          height,
+          start,
+          goal,
+          voidCells: layout.voidCells,
+          endlessFeast,
+          blocked,
+          portalPair: trialPair,
+        };
+        if (hasPath(trialBoard) && createReactiveRunnerRoute(trialBoard).path) {
+          portalPair = trialPair;
+          break portalSearch;
+        }
+      }
+    }
+  }
+  for (const portal of portalPair) occupiedKeys.add(cellKey(portal));
+  if (portalSpawn.forced && portalPair.length !== portalSpawn.count * 2) {
+    throw new RangeError("Unable to place both ends of the portal.");
+  }
+
+  const trapDoorSpawn = resolveTrapDoorSpawnCount(options, seed);
+  const trapDoorCandidates = shuffleDeterministically(
+    candidates.filter((cell) => !occupiedKeys.has(cellKey(cell))),
+    `${seed}:trap-door-cells-v1`,
+  );
+  const baseTrapDoors = [];
+  for (const candidate of trapDoorCandidates) {
+    if (baseTrapDoors.length >= trapDoorSpawn.count) break;
+    if (
+      baseTrapDoors.some((trapDoor) => {
+        const deltaX = Math.abs(trapDoor.x - candidate.x);
+        const deltaY = Math.abs(trapDoor.y - candidate.y);
+        return Math.max(deltaX, deltaY) === 3 && [0, 3].includes(deltaX) &&
+          [0, 3].includes(deltaY);
+      })
+    ) {
+      continue;
+    }
+    const trialTrapDoors = [...baseTrapDoors, cloneCell(candidate)];
+    const trialBoard = {
+      width,
+      height,
+      start,
+      goal,
+      voidCells: layout.voidCells,
+      endlessFeast,
+      blocked,
+      portalPair,
+      baseTrapDoors: trialTrapDoors,
+    };
+    if (hasPath(trialBoard) && createReactiveRunnerRoute(trialBoard).path) {
+      baseTrapDoors.push(cloneCell(candidate));
+      occupiedKeys.add(cellKey(candidate));
+    }
+  }
+  baseTrapDoors.sort(compareCells);
+  if (trapDoorSpawn.forced && baseTrapDoors.length !== trapDoorSpawn.count) {
+    throw new RangeError(
+      `Unable to place ${trapDoorSpawn.count} trap doors while preserving a route.`,
+    );
+  }
+
   return {
     width,
     height,
@@ -1390,7 +1845,14 @@ export function generateBaseMap(options = {}) {
     baseSlowTowers,
     requestedSpeedTowerCount: speedTowerSpawn.count,
     speedTowerSpawnChance: speedTowerSpawn.chance,
+    speedTowerSpawnChances: speedTowerSpawn.chances,
     baseSpeedTowers,
+    requestedPortalCount: portalSpawn.count,
+    portalSpawnChance: portalSpawn.chance,
+    portalPair,
+    requestedTrapDoorCount: trapDoorSpawn.count,
+    trapDoorSpawnChances: trapDoorSpawn.chances,
+    baseTrapDoors,
   };
 }
 
@@ -1507,9 +1969,6 @@ function cloneBaseMap(baseMap) {
     return cloneCell(tower);
   });
   baseSpeedTowers.sort(compareCells);
-  if (baseSpeedTowers.length > 1) {
-    throw new RangeError("A base map can contain at most one speed tower.");
-  }
 
   const slowTowerSpawnChances = baseMap.slowTowerSpawnChances ?? null;
   if (
@@ -1540,10 +1999,104 @@ function cloneBaseMap(baseMap) {
     baseMap.requestedSpeedTowerCount ?? baseSpeedTowers.length;
   if (
     !Number.isSafeInteger(requestedSpeedTowerCount) ||
-    requestedSpeedTowerCount < 0 ||
-    requestedSpeedTowerCount > 1
+    requestedSpeedTowerCount < 0
   ) {
-    throw new RangeError("requestedSpeedTowerCount must be either 0 or 1.");
+    throw new RangeError("requestedSpeedTowerCount must be non-negative.");
+  }
+
+  const speedTowerSpawnChances = baseMap.speedTowerSpawnChances ?? null;
+  if (
+    speedTowerSpawnChances !== null &&
+    (!Array.isArray(speedTowerSpawnChances) ||
+      speedTowerSpawnChances.some(
+        (chance) => !Number.isFinite(chance) || chance < 0,
+      ))
+  ) {
+    throw new RangeError(
+      "speedTowerSpawnChances must be null or an array of non-negative numbers.",
+    );
+  }
+
+  const portalPair = (baseMap.portalPair ?? []).map((portal) => {
+    if (!isInsideGrid(portal, width, height)) {
+      throw new RangeError("Every portal end must be inside the grid.");
+    }
+    if (cellsEqual(portal, start) || cellsEqual(portal, goal)) {
+      throw new RangeError("A portal end cannot occupy start or goal.");
+    }
+    const key = cellKey(portal);
+    if (voidSeen.has(key)) {
+      throw new RangeError("A portal end must occupy a playable cell.");
+    }
+    if (occupiesEndlessFeast(portal)) {
+      throw new RangeError("A portal end cannot occupy Endless Feast.");
+    }
+    if (seen.has(key)) {
+      throw new RangeError("Generated floor objects must occupy unique cells.");
+    }
+    seen.add(key);
+    return cloneCell(portal);
+  });
+  if (![0, 2].includes(portalPair.length)) {
+    throw new RangeError("portalPair must contain either zero or two cells.");
+  }
+  portalPair.sort(compareCells);
+  const portalSpawnChance = baseMap.portalSpawnChance ?? null;
+  if (
+    portalSpawnChance !== null &&
+    (!Number.isFinite(portalSpawnChance) ||
+      portalSpawnChance < 0 ||
+      portalSpawnChance > 1)
+  ) {
+    throw new RangeError("portalSpawnChance must be null or between 0 and 1.");
+  }
+  const requestedPortalCount =
+    baseMap.requestedPortalCount ?? (portalPair.length === 2 ? 1 : 0);
+  if (
+    !Number.isSafeInteger(requestedPortalCount) ||
+    requestedPortalCount < 0 ||
+    requestedPortalCount > 1
+  ) {
+    throw new RangeError("requestedPortalCount must be either 0 or 1.");
+  }
+
+  const baseTrapDoors = (baseMap.baseTrapDoors ?? []).map((trapDoor) => {
+    if (!isInsideGrid(trapDoor, width, height)) {
+      throw new RangeError("Every trap door must be inside the grid.");
+    }
+    if (cellsEqual(trapDoor, start) || cellsEqual(trapDoor, goal)) {
+      throw new RangeError("A trap door cannot occupy start or goal.");
+    }
+    const key = cellKey(trapDoor);
+    if (voidSeen.has(key)) {
+      throw new RangeError("A trap door must occupy a playable cell.");
+    }
+    if (occupiesEndlessFeast(trapDoor)) {
+      throw new RangeError("A trap door cannot occupy Endless Feast.");
+    }
+    if (seen.has(key)) {
+      throw new RangeError("Generated floor objects must occupy unique cells.");
+    }
+    seen.add(key);
+    return cloneCell(trapDoor);
+  });
+  baseTrapDoors.sort(compareCells);
+  const trapDoorSpawnChances = baseMap.trapDoorSpawnChances ?? null;
+  if (
+    trapDoorSpawnChances !== null &&
+    (!Array.isArray(trapDoorSpawnChances) ||
+      trapDoorSpawnChances.some(
+        (chance) => !Number.isFinite(chance) || chance < 0,
+      ))
+  ) {
+    throw new RangeError(
+      "trapDoorSpawnChances must be null or an array of non-negative numbers.",
+    );
+  }
+  const requestedTrapDoorCount =
+    baseMap.requestedTrapDoorCount ?? baseTrapDoors.length;
+  if (!Number.isSafeInteger(requestedTrapDoorCount) || requestedTrapDoorCount < 0) {
+    throw new RangeError("requestedTrapDoorCount must be non-negative.");
   }
 
   const endlessFeastSpawnChance = baseMap.endlessFeastSpawnChance ?? null;
@@ -1588,12 +2141,24 @@ function cloneBaseMap(baseMap) {
     baseSlowTowers,
     requestedSpeedTowerCount,
     speedTowerSpawnChance,
+    speedTowerSpawnChances:
+      speedTowerSpawnChances === null ? null : [...speedTowerSpawnChances],
     baseSpeedTowers,
+    requestedPortalCount,
+    portalSpawnChance,
+    portalPair,
+    requestedTrapDoorCount,
+    trapDoorSpawnChances:
+      trapDoorSpawnChances === null ? null : [...trapDoorSpawnChances],
+    baseTrapDoors,
   };
   if (!hasOpenEndlessFeastSide(copy)) {
     throw new RangeError("Endless Feast must have at least one unobstructed side.");
   }
   if (!hasPath(copy)) throw new RangeError("The supplied base map has no route.");
+  if (!createReactiveRunnerRoute(copy).path) {
+    throw new RangeError("The supplied base map strands the runner after a floor effect.");
+  }
   return copy;
 }
 
@@ -1677,8 +2242,18 @@ function speedTowersForState(state) {
   return [...baseTowers, ...placedTowers];
 }
 
-function derivedRouteValues(state, route) {
-  const baseRouteMetrics = calculateRouteMetrics(route, state.rules);
+function derivedRouteValues(state) {
+  const reactiveRoute = createReactiveRunnerRoute(state);
+  const route = reactiveRoute.path;
+  const floorObjects = {
+    portalPair: state.portalPair,
+    trapDoors: state.baseTrapDoors,
+    floorObjectTransitions: reactiveRoute.floorObjectTransitions,
+  };
+  const baseRouteMetrics = calculateRouteMetrics(route, {
+    ...state.rules,
+    ...floorObjects,
+  });
   const runnerSimulation = calculateRunnerSimulation(
     route,
     slowTowersForState(state),
@@ -1686,6 +2261,7 @@ function derivedRouteValues(state, route) {
       ...state.rules,
       speedTowers: speedTowersForState(state),
       endlessFeast: state.endlessFeast,
+      ...floorObjects,
     },
   );
   const routeMetrics = {
@@ -1693,12 +2269,11 @@ function derivedRouteValues(state, route) {
     baseTravelTimeMs: baseRouteMetrics.travelTimeMs,
     travelTimeMs: runnerSimulation.travelTimeMs,
   };
-  return { routeMetrics, runnerSimulation };
+  return { route, routeMetrics, runnerSimulation };
 }
 
 function withDerivedRoute(state) {
-  const route = findShortestPath(state);
-  const { routeMetrics, runnerSimulation } = derivedRouteValues(state, route);
+  const { route, routeMetrics, runnerSimulation } = derivedRouteValues(state);
   return {
     ...state,
     route,
@@ -1739,6 +2314,14 @@ export function createGameState(options = {}) {
     baseRocks: baseMap.baseRocks.map(cloneCell),
     baseSlowTowers: baseMap.baseSlowTowers.map(cloneCell),
     baseSpeedTowers: baseMap.baseSpeedTowers.map(cloneCell),
+    requestedPortalCount: baseMap.requestedPortalCount,
+    portalSpawnChance: baseMap.portalSpawnChance,
+    portalPair: baseMap.portalPair.map(cloneCell),
+    requestedTrapDoorCount: baseMap.requestedTrapDoorCount,
+    trapDoorSpawnChances: baseMap.trapDoorSpawnChances === null
+      ? null
+      : [...baseMap.trapDoorSpawnChances],
+    baseTrapDoors: baseMap.baseTrapDoors.map(cloneCell),
     obstacles: [],
     gold: startingGold,
     startingGold,
@@ -1767,6 +2350,16 @@ export function isEndlessFeastClearingCell(state, cell) {
   );
 }
 
+function isProtectedFloorCell(state, cell) {
+  return (
+    cellsEqual(cell, state.start) ||
+    cellsEqual(cell, state.goal) ||
+    (state.endlessFeast && cellsEqual(cell, state.endlessFeast)) ||
+    (state.portalPair ?? []).some((portal) => cellsEqual(cell, portal)) ||
+    (state.baseTrapDoors ?? []).some((trapDoor) => cellsEqual(cell, trapDoor))
+  );
+}
+
 export function getCellType(state, cell) {
   if (!isInsideGrid(cell, state.width, state.height)) return null;
   if (!isPlayableCell(state, cell)) return CELL_TYPES.VOID;
@@ -1788,6 +2381,12 @@ export function getCellType(state, cell) {
     (state.baseSpeedTowers ?? []).some((tower) => cellKey(tower) === key)
   ) {
     return CELL_TYPES.SPEED_TOWER;
+  }
+  if ((state.portalPair ?? []).some((portal) => cellKey(portal) === key)) {
+    return CELL_TYPES.PORTAL;
+  }
+  if ((state.baseTrapDoors ?? []).some((trapDoor) => cellKey(trapDoor) === key)) {
+    return CELL_TYPES.TRAP_DOOR;
   }
   if (state.obstacles.some((obstacle) => cellKey(obstacle) === key)) {
     return CELL_TYPES.OBSTACLE;
@@ -1824,7 +2423,6 @@ function generatedObjectAt(state, cell) {
   const collections = [
     ["baseRocks", CELL_TYPES.ROCK],
     ["baseSlowTowers", CELL_TYPES.SLOW_TOWER],
-    ["baseSpeedTowers", CELL_TYPES.SPEED_TOWER],
   ];
   for (const [collection, type] of collections) {
     const object = (state[collection] ?? []).find((candidate) =>
@@ -1841,7 +2439,7 @@ function failure(state, reason, details = {}) {
 
 /**
  * Removes one object supplied by the seeded base map and charges once. This
- * covers rocks and neutral towers while leaving player-built pieces to the
+ * covers rocks and neutral slow towers while leaving fixed floor objects and player-built pieces to the
  * normal obstacle-removal/refund flow.
  */
 export function tryRemoveGeneratedObject(state, cell, options = {}) {
@@ -1927,11 +2525,7 @@ export function evaluateObstaclePlacement(state, cell, options = {}) {
       cell: cloneCell(cell),
     });
   }
-  if (
-    cellsEqual(cell, state.start) ||
-    cellsEqual(cell, state.goal) ||
-    (state.endlessFeast && cellsEqual(cell, state.endlessFeast))
-  ) {
+  if (isProtectedFloorCell(state, cell)) {
     return failure(state, PLACEMENT_FAILURES.PROTECTED_CELL, {
       cell: cloneCell(cell),
     });
@@ -1980,14 +2574,24 @@ export function evaluateObstaclePlacement(state, cell, options = {}) {
     });
   }
 
-  const { routeMetrics, runnerSimulation } = derivedRouteValues(preview, route);
+  const {
+    route: reactiveRoute,
+    routeMetrics,
+    runnerSimulation,
+  } = derivedRouteValues(preview);
+  if (!reactiveRoute) {
+    return failure(state, PLACEMENT_FAILURES.BLOCKS_PATH, {
+      cell: cloneCell(cell),
+      cost,
+    });
+  }
   return {
     ok: true,
     state,
     cell: cloneCell(cell),
     obstacle,
     cost,
-    route,
+    route: reactiveRoute,
     routeMetrics,
     runnerSimulation,
     scoreMs: routeMetrics.travelTimeMs,
@@ -2069,11 +2673,7 @@ export function evaluateObstacleGroupPlacement(state, placement, options = {}) {
         cellIndex: index,
       });
     }
-    if (
-      cellsEqual(cell, state.start) ||
-      cellsEqual(cell, state.goal) ||
-      (state.endlessFeast && cellsEqual(cell, state.endlessFeast))
-    ) {
+    if (isProtectedFloorCell(state, cell)) {
       return failure(state, PLACEMENT_FAILURES.PROTECTED_CELL, {
         cell: cloneCell(cell),
         cellIndex: index,
@@ -2157,7 +2757,18 @@ export function evaluateObstacleGroupPlacement(state, placement, options = {}) {
     });
   }
 
-  const { routeMetrics, runnerSimulation } = derivedRouteValues(preview, route);
+  const {
+    route: reactiveRoute,
+    routeMetrics,
+    runnerSimulation,
+  } = derivedRouteValues(preview);
+  if (!reactiveRoute) {
+    return failure(state, PLACEMENT_FAILURES.BLOCKS_PATH, {
+      cells: cells.map(cloneCell),
+      cost,
+      groupId,
+    });
+  }
   return {
     ok: true,
     state,
@@ -2172,7 +2783,7 @@ export function evaluateObstacleGroupPlacement(state, placement, options = {}) {
     obstacles,
     cost,
     tearCost,
-    route,
+    route: reactiveRoute,
     routeMetrics,
     runnerSimulation,
     scoreMs: routeMetrics.travelTimeMs,

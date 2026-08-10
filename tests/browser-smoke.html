@@ -46,6 +46,7 @@
         draftAugmentChoices,
         floorConfig,
       } from "../src/roguelike.js";
+      import { fitBoardGeometry } from "../src/canvas-geometry.js";
 
       const result = document.querySelector("#result");
       const checks = [];
@@ -67,6 +68,36 @@
                 { floorNumber: 4, width: 26, height: 21, buildDurationMs: 120_000 },
               ]),
           "roguelike floors grow by 2x2 and grant 20 more build seconds",
+        );
+        const fittedBoards = [
+          [320, 240],
+          [640, 480],
+          [1_000, 750],
+          [1_280, 720],
+        ].flatMap(([viewWidth, viewHeight]) =>
+          [1, 1.25, 2].flatMap((pixelRatio) =>
+            Array.from({ length: RUN_FLOORS }, (_, index) => {
+              const floor = floorConfig(index + 1);
+              return fitBoardGeometry(
+                viewWidth,
+                viewHeight,
+                floor.width,
+                floor.height,
+                pixelRatio,
+              );
+            }),
+          ),
+        );
+        assert(
+          fittedBoards.every(
+            (geometry) =>
+              geometry.cell > 0 &&
+              geometry.left >= 0 &&
+              geometry.top >= 0 &&
+              geometry.right <= geometry.width &&
+              geometry.bottom <= geometry.height,
+          ),
+          "every floor fits fully inside desktop and mobile canvas bounds",
         );
         const firstAugmentDraft = draftAugmentChoices("BROWSER-RUN", 1);
         const convertedAugmentMap = applyMapAugments(
@@ -388,10 +419,12 @@
           speedTowerSpawnChance: 0,
         });
         assert(
-          firstMap.speedTowerSpawnChance === 0.25 &&
+          firstMap.speedTowerSpawnChance === null &&
+            JSON.stringify(firstMap.speedTowerSpawnChances) === JSON.stringify([0.58, 0.36, 0.06]) &&
+            JSON.stringify(firstMap.speedTowerSpawnChances) === JSON.stringify(firstMap.slowTowerSpawnChances) &&
             guaranteedSpeedMap.baseSpeedTowers.length === 1 &&
             noSpeedMap.baseSpeedTowers.length === 0,
-          "neutral speed towers use the configurable 25% default roll",
+          "neutral speed towers use the slow-tower count rates while retaining explicit legacy rolls",
         );
         const visualSpeedMap = Array.from({ length: 32 }, (_, index) =>
           generateBaseMap({
@@ -403,6 +436,107 @@
         ).find((map) => map.baseSpeedTowers.length === 1);
         assert(visualSpeedMap, "the default roll produces a reproducible speed-tower round");
         document.body.dataset.speedTowerSeed = visualSpeedMap.seed;
+
+        const linkedPortalState = createGameState({
+          baseMap: {
+            width: 7,
+            height: 1,
+            seed: "browser-linked-portal",
+            start: { x: 0, y: 0 },
+            goal: { x: 6, y: 0 },
+            baseRocks: [],
+            portalPair: [{ x: 1, y: 0 }, { x: 5, y: 0 }],
+          },
+          stepDurationMs: 1_000,
+          turnPenaltyMs: 0,
+        });
+        const portalPlacement = evaluateObstacleGroupPlacement(linkedPortalState, {
+          type: "crate",
+          cost: 10,
+          cells: [{ x: 1, y: 0 }],
+        });
+        assert(
+          JSON.stringify(findShortestPath({
+            width: 7,
+            height: 1,
+            start: { x: 0, y: 0 },
+            goal: { x: 6, y: 0 },
+            blocked: [],
+            portalPair: [{ x: 1, y: 0 }, { x: 5, y: 0 }],
+          })) === JSON.stringify(Array.from({ length: 7 }, (_, x) => ({ x, y: 0 }))) &&
+          JSON.stringify(linkedPortalState.route) === JSON.stringify([
+            { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 5, y: 0 }, { x: 6, y: 0 },
+          ]) &&
+            linkedPortalState.scoreMs === 2_000 &&
+            linkedPortalState.runnerSimulation.portalApplications.length === 1 &&
+            createCellGrid(linkedPortalState)[0][1] === CELL_TYPES.PORTAL &&
+            !portalPlacement.ok &&
+            portalPlacement.reason === "protected-cell",
+          "a linked portal teleports once and deactivates in the runner timeline",
+        );
+        const trapDoorState = createGameState({
+          baseMap: {
+            width: 8,
+            height: 1,
+            seed: "browser-trap-door",
+            start: { x: 0, y: 0 },
+            goal: { x: 7, y: 0 },
+            baseRocks: [],
+            baseTrapDoors: [{ x: 1, y: 0 }],
+          },
+          stepDurationMs: 1_000,
+          turnPenaltyMs: 0,
+        });
+        assert(
+          JSON.stringify(trapDoorState.route.slice(0, 3)) === JSON.stringify([
+            { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 4, y: 0 },
+          ]) &&
+            trapDoorState.scoreMs === 5_000 &&
+            trapDoorState.runnerSimulation.trapDoorApplications.length === 1 &&
+            createCellGrid(trapDoorState)[0][1] === CELL_TYPES.TRAP_DOOR,
+          "a trap door launches three squares in one step and deactivates",
+        );
+        const edgeTrapState = createGameState({
+          baseMap: {
+            width: 5,
+            height: 1,
+            seed: "browser-edge-trap",
+            start: { x: 0, y: 0 },
+            goal: { x: 4, y: 0 },
+            baseRocks: [],
+            baseTrapDoors: [{ x: 3, y: 0 }],
+          },
+          stepDurationMs: 1_000,
+          turnPenaltyMs: 0,
+        });
+        assert(
+          edgeTrapState.runnerSimulation.trapDoorApplications[0]?.landing.x === 4 &&
+            edgeTrapState.runnerSimulation.trapDoorApplications[0]?.landing.y === 0 &&
+            edgeTrapState.scoreMs === 4_000,
+          "a trap door clamps its landing to the last valid edge square",
+        );
+        const ignoredShortcutState = createGameState({
+          baseMap: {
+            width: 7,
+            height: 3,
+            seed: "browser-ignore-shortcuts",
+            start: { x: 0, y: 1 },
+            goal: { x: 6, y: 1 },
+            baseRocks: [],
+            portalPair: [{ x: 1, y: 0 }, { x: 4, y: 0 }],
+            baseTrapDoors: [{ x: 2, y: 2 }],
+          },
+          stepDurationMs: 1_000,
+          turnPenaltyMs: 0,
+        });
+        assert(
+          JSON.stringify(ignoredShortcutState.route) ===
+              JSON.stringify(Array.from({ length: 7 }, (_, x) => ({ x, y: 1 }))) &&
+            ignoredShortcutState.runnerSimulation.portalApplications.length === 0 &&
+            ignoredShortcutState.runnerSimulation.trapDoorApplications.length === 0 &&
+            ignoredShortcutState.scoreMs === 6_000,
+          "portals and trap doors never attract the runner away from its direct route",
+        );
 
         const corridor = {
           width: 5,
@@ -441,6 +575,29 @@
             demolished.state.baseRocks.length === 0 &&
             generatedObjectState.baseRocks.length === 1,
           "generated objects can be removed immutably for 8 gold",
+        );
+        const fixedSpeedTowerState = createGameState({
+          baseMap: {
+            width: 5,
+            height: 3,
+            seed: "browser-fixed-speed",
+            start: { x: 0, y: 1 },
+            goal: { x: 4, y: 1 },
+            baseRocks: [],
+            baseSpeedTowers: [{ x: 2, y: 0 }],
+          },
+          startingGold: 8,
+        });
+        const fixedSpeedRemoval = tryRemoveGeneratedObject(
+          fixedSpeedTowerState,
+          { x: 2, y: 0 },
+        );
+        assert(
+          !fixedSpeedRemoval.ok &&
+            fixedSpeedRemoval.reason === "no-generated-object" &&
+            fixedSpeedRemoval.state.gold === 8 &&
+            fixedSpeedRemoval.state.baseSpeedTowers.length === 1,
+          "neutral speed towers cannot be removed",
         );
 
         const openBoard = {
@@ -526,8 +683,8 @@
         );
         assert(
           diagonalOnlySpeed.speedApplications.length === 1 &&
-            diagonalOnlySpeed.travelTimeMs === Math.round((Math.SQRT2 * 1_000) / 2),
-          "tower adjacency stays cardinal while boosted diagonal travel uses geometric length",
+            diagonalOnlySpeed.travelTimeMs === Math.round((Math.SQRT2 * 1_000) / 1.5),
+          "tower adjacency stays cardinal while the default 50% boost uses geometric length",
         );
 
         const balancedSimulation = calculateRunnerSimulation(
@@ -541,11 +698,11 @@
         );
         const balancedPosition = getRunnerPositionAtTime(balancedSimulation, 500);
         assert(
-          balancedSimulation.travelTimeMs === 2_000 &&
+          balancedSimulation.travelTimeMs === 2_667 &&
             balancedPosition.slowed &&
             balancedPosition.spedUp &&
-            balancedPosition.speedMultiplier === 1,
-          "simultaneous 0.5x slow and 2x speed effects cancel but remain visible",
+            balancedPosition.speedMultiplier === 0.75,
+          "simultaneous 0.5x slow and 1.5x speed effects multiply and remain visible",
         );
 
         const goalOnlySpeed = calculateRunnerSimulation(
@@ -668,23 +825,44 @@
             ...appDocument.querySelectorAll("#augmentChoices [data-augment]"),
           ];
           const draftOpened =
-            resultsReached &&
             appDocument.body.dataset.phase === "augment" &&
             appDocument.querySelector("#augmentModal")?.classList.contains("open") &&
             draftButtons.length === 2 &&
             new Set(draftButtons.map((button) => button.dataset.augment)).size === 2;
           const chosenAugment = draftButtons[0]?.dataset.augment;
           draftButtons[0]?.click();
-          assert(
+          const nextFloorSnapshot = {
+            resultsReached,
+            draftOpened,
+            phase: appDocument.body.dataset.phase,
+            floor: appDocument.body.dataset.floor,
+            floorWidth: appDocument.body.dataset.floorWidth,
+            floorHeight: appDocument.body.dataset.floorHeight,
+            buildDurationMs: appDocument.body.dataset.buildDurationMs,
+            chosenAugment,
+            augments: JSON.parse(appDocument.body.dataset.augments ?? "[]"),
+            augmentValue: appDocument.querySelector("#augmentValue")?.textContent,
+            boardFits: appDocument.querySelector("#gameCanvas")?.dataset.boardFits,
+            appError: appDocument.body.dataset.appError ?? null,
+          };
+          const nextFloorWorked =
             draftOpened &&
-              appDocument.body.dataset.phase === "build" &&
-              appDocument.body.dataset.floor === "2" &&
-              appDocument.body.dataset.floorWidth === "22" &&
-              appDocument.body.dataset.floorHeight === "17" &&
-              appDocument.body.dataset.buildDurationMs === "80000" &&
-              JSON.parse(appDocument.body.dataset.augments ?? "[]").includes(chosenAugment) &&
-              appDocument.querySelector("#augmentValue")?.textContent === "1" &&
-              !appDocument.body.dataset.appError,
+              nextFloorSnapshot.phase === "build" &&
+              nextFloorSnapshot.floor === "2" &&
+              nextFloorSnapshot.floorWidth === "22" &&
+              nextFloorSnapshot.floorHeight === "17" &&
+              nextFloorSnapshot.buildDurationMs === "80000" &&
+              nextFloorSnapshot.augments.includes(chosenAugment) &&
+              nextFloorSnapshot.augmentValue === "1" &&
+              nextFloorSnapshot.boardFits === "true" &&
+              !nextFloorSnapshot.appError;
+          if (!nextFloorWorked) {
+            throw new Error(
+              `Next-floor regression: ${JSON.stringify(nextFloorSnapshot)}`,
+            );
+          }
+          assert(
+            nextFloorWorked,
             "clearing a floor opens a two-card augment draft and starts the larger next floor",
           );
         } finally {
@@ -696,6 +874,8 @@
       } catch (error) {
         document.body.dataset.status = "failed";
         result.textContent = `FAIL\n${error.stack || error.message}`;
+      } finally {
+        document.querySelector('script[type="module"]')?.remove();
       }
     </script>
   </body>
