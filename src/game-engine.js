@@ -41,6 +41,7 @@ export const PLACEMENT_FAILURES = Object.freeze({
 export const DEFAULT_GENERATED_OBJECT_REMOVAL_COST = 8;
 export const DEFAULT_ENDLESS_FEAST_SPAWN_CHANCE = 0.2;
 export const DEFAULT_PORTAL_SPAWN_CHANCE = 0.25;
+export const MIN_PORTAL_SEPARATION = 3;
 
 export const MAP_SHAPES = Object.freeze({
   RECTANGLE: "rectangle",
@@ -231,6 +232,38 @@ export function isInsideGrid(cell, width, height) {
 
 function compareCells(first, second) {
   return first.y - second.y || first.x - second.x;
+}
+
+function portalPairIndex(portalIndex) {
+  return Math.floor(portalIndex / 2);
+}
+
+function pairedPortalIndex(portalIndex) {
+  return portalIndex % 2 === 0 ? portalIndex + 1 : portalIndex - 1;
+}
+
+function portalDistance(first, second) {
+  return Math.max(Math.abs(first.x - second.x), Math.abs(first.y - second.y));
+}
+
+function isSeparatedFromPortals(cell, portals) {
+  return portals.every(
+    (portal) => portalDistance(cell, portal) >= MIN_PORTAL_SEPARATION,
+  );
+}
+
+function canonicalPortalOrder(portals) {
+  const pairs = [];
+  for (let index = 0; index < portals.length; index += 2) {
+    pairs.push(
+      [cloneCell(portals[index]), cloneCell(portals[index + 1])].sort(compareCells),
+    );
+  }
+  pairs.sort(
+    (first, second) =>
+      compareCells(first[0], second[0]) || compareCells(first[1], second[1]),
+  );
+  return pairs.flat();
 }
 
 function assertDimensions(width, height) {
@@ -478,17 +511,44 @@ function trapDoorLandingCell(board, trapDoor, direction) {
 function createReactiveRunnerRoute(board) {
   const portalPair = board.portalPair ?? [];
   const trapDoors = board.baseTrapDoors ?? [];
-  const portalIndexByCell = new Map(
-    portalPair.map((cell, index) => [cellKey(cell), index]),
+  const portalByCell = new Map(
+    portalPair.map((cell, index) => [
+      cellKey(cell),
+      {
+        pairIndex: portalPairIndex(index),
+        exit: portalPair[pairedPortalIndex(index)],
+      },
+    ]),
   );
   const trapDoorByCell = new Map(trapDoors.map((cell) => [cellKey(cell), cell]));
   const usedTrapDoors = new Set();
+  const usedPortalPairs = new Set();
   const path = [cloneCell(board.start)];
   const floorObjectTransitions = [];
   let current = cloneCell(board.start);
   let feastReached = !board.endlessFeast;
-  let portalUsed = false;
-  const maximumReroutes = trapDoors.length + (portalPair.length === 2 ? 1 : 0) + 3;
+  const maximumReroutes = trapDoors.length + portalPair.length / 2 + 3;
+
+  const applyPortal = () => {
+    const portal = portalByCell.get(cellKey(current));
+    if (!portal || usedPortalPairs.has(portal.pairIndex)) return false;
+    const entrance = cloneCell(current);
+    const exit = cloneCell(portal.exit);
+    const fromIndex = path.length - 1;
+    path.push(exit);
+    floorObjectTransitions.push({
+      type: "teleport",
+      pairIndex: portal.pairIndex,
+      fromIndex,
+      toIndex: path.length - 1,
+      entrance,
+      exit: cloneCell(exit),
+      direction: null,
+    });
+    current = exit;
+    usedPortalPairs.add(portal.pairIndex);
+    return true;
+  };
 
   for (let reroute = 0; reroute < maximumReroutes; reroute += 1) {
     const target = feastReached ? board.goal : board.endlessFeast;
@@ -522,24 +582,7 @@ function createReactiveRunnerRoute(board) {
         break;
       }
 
-      const portalIndex = portalUsed
-        ? undefined
-        : portalIndexByCell.get(cellKey(current));
-      if (portalIndex !== undefined) {
-        const entrance = cloneCell(current);
-        const exit = cloneCell(portalPair[1 - portalIndex]);
-        const fromIndex = path.length - 1;
-        path.push(exit);
-        floorObjectTransitions.push({
-          type: "teleport",
-          fromIndex,
-          toIndex: path.length - 1,
-          entrance,
-          exit: cloneCell(exit),
-          direction: null,
-        });
-        current = exit;
-        portalUsed = true;
+      if (applyPortal()) {
         effectApplied = true;
         break;
       }
@@ -562,25 +605,7 @@ function createReactiveRunnerRoute(board) {
         if (!feastReached && cellsEqual(current, board.endlessFeast)) {
           feastReached = true;
         }
-        const landingPortalIndex = portalUsed
-          ? undefined
-          : portalIndexByCell.get(cellKey(current));
-        if (landingPortalIndex !== undefined) {
-          const entrance = cloneCell(current);
-          const exit = cloneCell(portalPair[1 - landingPortalIndex]);
-          const portalFromIndex = path.length - 1;
-          path.push(exit);
-          floorObjectTransitions.push({
-            type: "teleport",
-            fromIndex: portalFromIndex,
-            toIndex: path.length - 1,
-            entrance,
-            exit: cloneCell(exit),
-            direction: null,
-          });
-          current = exit;
-          portalUsed = true;
-        }
+        applyPortal();
         effectApplied = true;
         break;
       }
@@ -597,10 +622,12 @@ function createReactiveRunnerRoute(board) {
 function classifyPathTransitions(path, options = {}) {
   const portalPair = options.portalPair ?? [];
   const trapDoors = options.trapDoors ?? options.baseTrapDoors ?? [];
-  const portalKeys = new Set(portalPair.map(cellKey));
+  const portalIndexByKey = new Map(
+    portalPair.map((portal, index) => [cellKey(portal), index]),
+  );
   const trapKeys = new Set(trapDoors.map(cellKey));
   const usedTrapKeys = new Set();
-  let portalUsed = false;
+  const usedPortalPairs = new Set();
   const transitions = [];
   const explicitTransitions = new Map(
     (options.floorObjectTransitions ?? []).map((transition) => [
@@ -617,10 +644,18 @@ function classifyPathTransitions(path, options = {}) {
     const fromKey = cellKey(from);
     const explicit = explicitTransitions.get(`${index - 1}:${index}`);
     if (explicit) {
-      if (explicit.type === "teleport") portalUsed = true;
+      const explicitPortalIndex = portalIndexByKey.get(fromKey);
+      const explicitPairIndex = explicit.pairIndex ??
+        (explicitPortalIndex === undefined
+          ? undefined
+          : portalPairIndex(explicitPortalIndex));
+      if (explicit.type === "teleport" && explicitPairIndex !== undefined) {
+        usedPortalPairs.add(explicitPairIndex);
+      }
       if (explicit.type === "launch") usedTrapKeys.add(fromKey);
       transitions.push({
         type: explicit.type,
+        pairIndex: explicitPairIndex,
         from,
         to,
         fromIndex: index - 1,
@@ -633,16 +668,19 @@ function classifyPathTransitions(path, options = {}) {
       });
       continue;
     }
+    const fromPortalIndex = portalIndexByKey.get(fromKey);
+    const pairIndex = fromPortalIndex === undefined
+      ? undefined
+      : portalPairIndex(fromPortalIndex);
     const isPortalJump =
-      !portalUsed &&
-      portalPair.length === 2 &&
-      portalKeys.has(fromKey) &&
-      portalKeys.has(cellKey(to)) &&
-      fromKey !== cellKey(to);
+      fromPortalIndex !== undefined &&
+      !usedPortalPairs.has(pairIndex) &&
+      cellKey(portalPair[pairedPortalIndex(fromPortalIndex)]) === cellKey(to);
     if (isPortalJump) {
-      portalUsed = true;
+      usedPortalPairs.add(pairIndex);
       transitions.push({
         type: "teleport",
+        pairIndex,
         from,
         to,
         fromIndex: index - 1,
@@ -1132,6 +1170,7 @@ export function calculateRunnerSimulation(path, slowTowers = [], options = {}) {
     }
     if (transition.type === "teleport") {
       portalApplications.push({
+        pairIndex: transition.pairIndex,
         entrance: cloneCell(transition.from),
         exit: cloneCell(transition.to),
         pathIndex: transition.fromIndex,
@@ -1507,8 +1546,8 @@ function resolveWeightedObjectSpawnCount(chances, seed, optionName) {
 function resolvePortalSpawnCount(options, seed) {
   const forcedCount = options.portalCount ?? options.forcedPortalCount;
   if (forcedCount !== undefined) {
-    if (!Number.isSafeInteger(forcedCount) || forcedCount < 0 || forcedCount > 1) {
-      throw new RangeError("portalCount must be either 0 or 1.");
+    if (!Number.isSafeInteger(forcedCount) || forcedCount < 0) {
+      throw new RangeError("portalCount must be a non-negative safe integer.");
     }
     return { count: forcedCount, forced: true, chance: null };
   }
@@ -1750,18 +1789,31 @@ export function generateBaseMap(options = {}) {
     `${seed}:portal-cells-v1`,
   );
   let portalPair = [];
-  if (portalSpawn.count === 1) {
+  for (let pairIndex = 0; pairIndex < portalSpawn.count; pairIndex += 1) {
+    let placedPair = false;
     portalSearch:
     for (let firstIndex = 0; firstIndex < portalCandidates.length; firstIndex += 1) {
+      const first = portalCandidates[firstIndex];
+      if (
+        occupiedKeys.has(cellKey(first)) ||
+        !isSeparatedFromPortals(first, portalPair)
+      ) {
+        continue;
+      }
       for (
         let secondIndex = firstIndex + 1;
         secondIndex < portalCandidates.length;
         secondIndex += 1
       ) {
-        const trialPair = [
-          cloneCell(portalCandidates[firstIndex]),
-          cloneCell(portalCandidates[secondIndex]),
-        ].sort(compareCells);
+        const second = portalCandidates[secondIndex];
+        if (
+          occupiedKeys.has(cellKey(second)) ||
+          !isSeparatedFromPortals(second, [...portalPair, first])
+        ) {
+          continue;
+        }
+        const newPair = [cloneCell(first), cloneCell(second)].sort(compareCells);
+        const trialPair = [...portalPair, ...newPair];
         const trialBoard = {
           width,
           height,
@@ -1774,14 +1826,18 @@ export function generateBaseMap(options = {}) {
         };
         if (hasPath(trialBoard) && createReactiveRunnerRoute(trialBoard).path) {
           portalPair = trialPair;
+          for (const portal of newPair) occupiedKeys.add(cellKey(portal));
+          placedPair = true;
           break portalSearch;
         }
       }
     }
+    if (!placedPair) break;
   }
-  for (const portal of portalPair) occupiedKeys.add(cellKey(portal));
   if (portalSpawn.forced && portalPair.length !== portalSpawn.count * 2) {
-    throw new RangeError("Unable to place both ends of the portal.");
+    throw new RangeError(
+      `Unable to place ${portalSpawn.count} separated portal pairs while preserving a route.`,
+    );
   }
 
   const trapDoorSpawn = resolveTrapDoorSpawnCount(options, seed);
@@ -2017,7 +2073,7 @@ function cloneBaseMap(baseMap) {
     );
   }
 
-  const portalPair = (baseMap.portalPair ?? []).map((portal) => {
+  let portalPair = (baseMap.portalPair ?? []).map((portal) => {
     if (!isInsideGrid(portal, width, height)) {
       throw new RangeError("Every portal end must be inside the grid.");
     }
@@ -2037,10 +2093,17 @@ function cloneBaseMap(baseMap) {
     seen.add(key);
     return cloneCell(portal);
   });
-  if (![0, 2].includes(portalPair.length)) {
-    throw new RangeError("portalPair must contain either zero or two cells.");
+  if (portalPair.length % 2 !== 0) {
+    throw new RangeError("portalPair must contain a whole number of two-ended pairs.");
   }
-  portalPair.sort(compareCells);
+  for (let index = 0; index < portalPair.length; index += 1) {
+    if (!isSeparatedFromPortals(portalPair[index], portalPair.slice(0, index))) {
+      throw new RangeError(
+        `Portal ends must be at least ${MIN_PORTAL_SEPARATION} squares apart.`,
+      );
+    }
+  }
+  portalPair = canonicalPortalOrder(portalPair);
   const portalSpawnChance = baseMap.portalSpawnChance ?? null;
   if (
     portalSpawnChance !== null &&
@@ -2051,13 +2114,12 @@ function cloneBaseMap(baseMap) {
     throw new RangeError("portalSpawnChance must be null or between 0 and 1.");
   }
   const requestedPortalCount =
-    baseMap.requestedPortalCount ?? (portalPair.length === 2 ? 1 : 0);
+    baseMap.requestedPortalCount ?? portalPair.length / 2;
   if (
     !Number.isSafeInteger(requestedPortalCount) ||
-    requestedPortalCount < 0 ||
-    requestedPortalCount > 1
+    requestedPortalCount < 0
   ) {
-    throw new RangeError("requestedPortalCount must be either 0 or 1.");
+    throw new RangeError("requestedPortalCount must be non-negative.");
   }
 
   const baseTrapDoors = (baseMap.baseTrapDoors ?? []).map((trapDoor) => {

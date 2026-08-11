@@ -1856,6 +1856,40 @@ footer kbd,
   background: radial-gradient(circle at 34% 28%, #705080, #34203e 70%);
 }
 
+#augmentModal[data-tier="gold"] .augment-emblem {
+  color: #fff0a8;
+  background: radial-gradient(circle at 34% 28%, #a97928, #493117 70%);
+}
+
+#augmentModal[data-tier="gold"] .augment-choice {
+  border-color: rgba(153, 105, 31, 0.45);
+  background:
+    radial-gradient(circle at 12% 20%, rgba(237, 184, 78, 0.2), transparent 45%),
+    linear-gradient(145deg, rgba(255, 249, 218, 0.62), rgba(207, 171, 99, 0.28));
+}
+
+#augmentModal[data-tier="gold"] .augment-icon {
+  background: linear-gradient(145deg, #a87929, #523719);
+}
+
+#augmentModal[data-tier="radiant"] .augment-emblem {
+  color: #e8fbff;
+  background: radial-gradient(circle at 34% 28%, #7b6fc7, #2d305e 70%);
+  box-shadow: inset 0 0 16px rgba(226, 250, 255, 0.28), 0 0 22px rgba(139, 180, 255, 0.35);
+}
+
+#augmentModal[data-tier="radiant"] .augment-choice {
+  border-color: rgba(100, 119, 188, 0.5);
+  background:
+    radial-gradient(circle at 12% 20%, rgba(155, 214, 255, 0.24), transparent 45%),
+    linear-gradient(145deg, rgba(246, 247, 255, 0.7), rgba(166, 160, 220, 0.3));
+}
+
+#augmentModal[data-tier="radiant"] .augment-icon {
+  background: linear-gradient(145deg, #756bc0, #30345f);
+  box-shadow: inset 0 0 0 3px rgba(229, 248, 255, 0.2), 0 4px 12px rgba(47, 52, 104, 0.32);
+}
+
 .augment-choices {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

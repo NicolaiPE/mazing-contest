@@ -182,7 +182,7 @@
               <span class="portal-note-icon" aria-hidden="true">A↔B</span>
               <span>
                 <strong>Linked portal</strong>
-                <small>25% chance · two linked ends · deactivates after one use</small>
+                <small>25% chance · ends stay 3+ squares apart · each pair deactivates after one use</small>
               </span>
             </div>
             <div class="neutral-tower-note trap-note" role="note" aria-label="Trap Door field event">
@@ -267,8 +267,9 @@
                   adjacent tile grants +50% speed for 5 seconds. It cannot be built or removed.
                 </li>
                 <li>
-                  <b>Linked portal:</b> has a 25% chance to place two linked ends. The runner never seeks one,
-                  but entering an end moves it to the other before it reroutes normally. Both ends then deactivate.
+                  <b>Linked portal:</b> has a 25% chance to place two linked ends at least three squares apart.
+                  The runner never seeks one, but entering an end moves it to its partner before rerouting normally.
+                  Each pair deactivates independently after one use.
                 </li>
                 <li>
                   <b>Trap Door:</b> uses the slow-tower spawn rates. The runner never seeks one, but crossing it
@@ -313,17 +314,17 @@
             <input
               id="roundCountInput"
               type="number"
-              min="4"
-              max="4"
+              min="5"
+              max="5"
               step="1"
-              value="4"
+              value="5"
               disabled
               inputmode="numeric"
               aria-describedby="roundCountHelp"
             />
             <span>floors</span>
           </div>
-          <small id="roundCountHelp">Four floors. Each grows by 2×2 cells and grants 20 more build seconds.</small>
+          <small id="roundCountHelp">Five floors. Each grows by 2×2 cells and grants 20 more build seconds.</small>
         </div>
         <div class="modal-rules">
           <div><b>1</b><span>Choose a tool</span></div>
@@ -331,7 +332,7 @@
           <div><b>3</b><span>Choose augments</span></div>
         </div>
         <div class="welcome-actions">
-          <button class="primary-button large" id="startButton" type="button">Start 4-floor run</button>
+          <button class="primary-button large" id="startButton" type="button">Start 5-floor run</button>
           <button class="secondary-button large" id="welcomeShareButton" type="button">Copy challenge link</button>
         </div>
         <small>No installation · Friends receive the same full contest</small>
@@ -359,7 +360,7 @@
         <div class="result-board" id="resultBoard"></div>
         <div class="result-actions">
           <button class="secondary-button large" id="resultShareButton" type="button">Copy challenge link</button>
-          <button class="secondary-button large" id="replayRoundButton" type="button">Replay floor as a new run</button>
+          <button class="secondary-button large" id="replayRoundButton" type="button">Replay this floor</button>
           <button class="primary-button large" id="nextRoundButton" type="button">Choose an augment</button>
         </div>
       </div>

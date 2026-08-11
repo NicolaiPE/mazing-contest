@@ -8,6 +8,7 @@ import {
   DEFAULT_PORTAL_SPAWN_CHANCE,
   DEFAULT_SPEED_TOWER_SPAWN_CHANCE,
   DEFAULT_SPEED_TOWER_SPAWN_CHANCES,
+  MIN_PORTAL_SEPARATION,
   MAP_SHAPES,
   PLACEMENT_FAILURES,
   buildRivalMaze,
@@ -43,17 +44,22 @@ import {
   parseChallengeTarget,
 } from "../src/challenge.js";
 import {
+  AUGMENTS,
   AUGMENT_IDS,
+  AUGMENT_TIERS,
   RUN_FLOORS,
   applyMapAugments,
   applyResourceAugments,
+  augmentTierForDraft,
   discountedBuildingCost,
   draftAugmentChoices,
   floorConfig,
+  hasAugmentDraftAfterFloor,
+  mapGenerationBonuses,
 } from "../src/roguelike.js";
 
 test("roguelike floors grow by 2x2 and grant 20 more build seconds", () => {
-  assert.equal(RUN_FLOORS, 4);
+  assert.equal(RUN_FLOORS, 5);
   assert.deepEqual(
     Array.from({ length: RUN_FLOORS }, (_, index) => floorConfig(index + 1)),
     [
@@ -61,6 +67,7 @@ test("roguelike floors grow by 2x2 and grant 20 more build seconds", () => {
       { floorNumber: 2, width: 22, height: 17, buildDurationMs: 80_000 },
       { floorNumber: 3, width: 24, height: 19, buildDurationMs: 100_000 },
       { floorNumber: 4, width: 26, height: 21, buildDurationMs: 120_000 },
+      { floorNumber: 5, width: 28, height: 23, buildDurationMs: 140_000 },
     ],
   );
 });
@@ -70,20 +77,46 @@ test("roguelike augment drafts are deterministic, unique, and persistent", () =>
   assert.deepEqual(firstDraft, draftAugmentChoices("AUGMENT-RUN", 1));
   assert.equal(firstDraft.length, 2);
   assert.equal(new Set(firstDraft).size, 2);
+  assert(firstDraft.every((augmentId) => AUGMENTS[augmentId].tier === AUGMENT_TIERS.GOLD));
+  assert.equal(augmentTierForDraft(1), AUGMENT_TIERS.GOLD);
+  assert.equal(augmentTierForDraft(2), AUGMENT_TIERS.GOLD);
+  assert.equal(augmentTierForDraft(3), AUGMENT_TIERS.RADIANT);
+  assert.equal(hasAugmentDraftAfterFloor(1), true);
+  assert.equal(hasAugmentDraftAfterFloor(2), true);
+  assert.equal(hasAugmentDraftAfterFloor(3), true);
+  assert.equal(hasAugmentDraftAfterFloor(4), false);
+  assert.throws(() => augmentTierForDraft(4), /1, 2, or 3/);
 
   const owned = [firstDraft[0]];
   const secondDraft = draftAugmentChoices("AUGMENT-RUN", 2, owned);
   assert(!secondDraft.includes(firstDraft[0]));
+  assert(secondDraft.every((augmentId) => AUGMENTS[augmentId].tier === AUGMENT_TIERS.GOLD));
+  const radiantDraft = draftAugmentChoices("AUGMENT-RUN", 3, [
+    firstDraft[0],
+    secondDraft[0],
+  ]);
+  assert.equal(radiantDraft.length, 2);
+  assert(radiantDraft.every(
+    (augmentId) => AUGMENTS[augmentId].tier === AUGMENT_TIERS.RADIANT,
+  ));
   assert.equal(
     applyResourceAugments(
       { gold: 90, tears: 1 },
       [AUGMENT_IDS.BONUS_GOLD],
     ).gold,
-    140,
+    120,
   );
-  assert.equal(
-    discountedBuildingCost(10, [AUGMENT_IDS.CHEAP_BUILDINGS]),
-    8,
+  assert.equal(discountedBuildingCost(10, [AUGMENT_IDS.CHEAP_BUILDINGS], "crate"), 9);
+  assert.equal(discountedBuildingCost(18, [AUGMENT_IDS.CHEAP_BUILDINGS], "fence"), 15);
+  assert.equal(discountedBuildingCost(26, [AUGMENT_IDS.CHEAP_BUILDINGS], "tower"), 20);
+  assert.deepEqual(
+    mapGenerationBonuses([
+      AUGMENT_IDS.GATES_OF_HADES,
+      AUGMENT_IDS.TRAP_QUEEN,
+      AUGMENT_IDS.CRUSHING_COLD,
+      AUGMENT_IDS.JUXTAPOSITION,
+    ]),
+    { portalPairs: 1, trapDoors: 3, slowTowers: 6, speedTowers: 4 },
   );
 
   const converted = applyMapAugments(
@@ -101,6 +134,34 @@ test("roguelike augment drafts are deterministic, unique, and persistent", () =>
     { x: 1, y: 1 },
     { x: 3, y: 2 },
   ]);
+
+  const radiantBase = generateBaseMap({
+    seed: "radiant-augment-map",
+    width: 26,
+    height: 21,
+    mapShape: MAP_SHAPES.RECTANGLE,
+    rockDensity: 0.1,
+    slowTowerCount: 0,
+    speedTowerCount: 0,
+    portalCount: 0,
+    trapDoorCount: 0,
+    endlessFeastCount: 0,
+  });
+  assert.equal(
+    applyMapAugments(radiantBase, [AUGMENT_IDS.GATES_OF_HADES]).portalPair.length,
+    2,
+  );
+  assert.equal(
+    applyMapAugments(radiantBase, [AUGMENT_IDS.TRAP_QUEEN]).baseTrapDoors.length,
+    3,
+  );
+  assert.equal(
+    applyMapAugments(radiantBase, [AUGMENT_IDS.CRUSHING_COLD]).baseSlowTowers.length,
+    2,
+  );
+  const juxtaposed = applyMapAugments(radiantBase, [AUGMENT_IDS.JUXTAPOSITION]);
+  assert.equal(juxtaposed.baseSlowTowers.length, 4);
+  assert.equal(juxtaposed.baseSpeedTowers.length, 4);
 });
 
 test("wide Lament fields also trigger from diagonal tiles", () => {
@@ -489,6 +550,7 @@ test("every floor fits inside common canvas sizes at high pixel density", () => 
 
 test("linked portals spawn at 25%, teleport once, and remain protected", () => {
   assert.equal(DEFAULT_PORTAL_SPAWN_CHANCE, 0.25);
+  assert.equal(MIN_PORTAL_SEPARATION, 3);
   const guaranteed = generateBaseMap({
     seed: "guaranteed-linked-portal",
     width: 9,
@@ -513,6 +575,12 @@ test("linked portals spawn at 25%, teleport once, and remain protected", () => {
   });
   assert.equal(guaranteed.portalPair.length, 2);
   assert.equal(absent.portalPair.length, 0);
+  assert(
+    Math.max(
+      Math.abs(guaranteed.portalPair[0].x - guaranteed.portalPair[1].x),
+      Math.abs(guaranteed.portalPair[0].y - guaranteed.portalPair[1].y),
+    ) >= MIN_PORTAL_SEPARATION,
+  );
 
   const state = createGameState({
     baseMap: {
@@ -554,6 +622,56 @@ test("linked portals spawn at 25%, teleport once, and remain protected", () => {
   const protectedPlacement = tryPlaceObstacle(state, { x: 1, y: 0 });
   assert.equal(protectedPlacement.ok, false);
   assert.equal(protectedPlacement.reason, PLACEMENT_FAILURES.PROTECTED_CELL);
+});
+
+test("multiple portal pairs remain separated and each pair can teleport once", () => {
+  const generated = generateBaseMap({
+    seed: "two-separated-portal-pairs",
+    width: 20,
+    height: 12,
+    mapShape: MAP_SHAPES.RECTANGLE,
+    rockDensity: 0.1,
+    slowTowerCount: 0,
+    speedTowerCount: 0,
+    trapDoorCount: 0,
+    portalCount: 2,
+  });
+  assert.equal(generated.portalPair.length, 4);
+  for (let first = 0; first < generated.portalPair.length; first += 1) {
+    for (let second = first + 1; second < generated.portalPair.length; second += 1) {
+      assert(
+        Math.max(
+          Math.abs(generated.portalPair[first].x - generated.portalPair[second].x),
+          Math.abs(generated.portalPair[first].y - generated.portalPair[second].y),
+        ) >= MIN_PORTAL_SEPARATION,
+      );
+    }
+  }
+
+  const state = createGameState({
+    baseMap: {
+      width: 17,
+      height: 1,
+      seed: "two-portal-corridor",
+      start: { x: 0, y: 0 },
+      goal: { x: 16, y: 0 },
+      baseRocks: [],
+      portalPair: [
+        { x: 1, y: 0 },
+        { x: 5, y: 0 },
+        { x: 9, y: 0 },
+        { x: 13, y: 0 },
+      ],
+    },
+    stepDurationMs: 1_000,
+    turnPenaltyMs: 0,
+  });
+  assert.equal(state.runnerSimulation.portalApplications.length, 2);
+  assert.deepEqual(
+    state.runnerSimulation.portalApplications.map((application) => application.pairIndex),
+    [0, 1],
+  );
+  assert.equal(state.scoreMs, 8_000);
 });
 
 test("trap doors use slow-tower rates and launch three squares once", () => {

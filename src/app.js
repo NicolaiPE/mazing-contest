@@ -29,12 +29,15 @@ import {
 import {
   AUGMENTS,
   AUGMENT_IDS,
+  AUGMENT_TIERS,
   RUN_FLOORS,
   applyMapAugments,
   applyResourceAugments,
+  augmentTierForDraft,
   discountedBuildingCost,
   draftAugmentChoices,
   floorConfig,
+  hasAugmentDraftAfterFloor,
 } from "./roguelike.js";
 import { fitBoardGeometry } from "./canvas-geometry.js";
 
@@ -199,6 +202,8 @@ const dom = {
   challengeTarget: document.querySelector("#challengeTarget"),
   roundCountHelp: document.querySelector("#roundCountHelp"),
   augmentEyebrow: document.querySelector("#augmentEyebrow"),
+  augmentTitle: document.querySelector("#augmentTitle"),
+  augmentCopy: document.querySelector("#augmentCopy"),
   augmentChoices: document.querySelector("#augmentChoices"),
   augmentOwned: document.querySelector("#augmentOwned"),
 };
@@ -214,6 +219,8 @@ let cumulativeScores = createCumulativeScores([
   { id: "player" },
   ...RIVAL_SPECS,
 ]);
+let roundStartCompletedRounds = 0;
+let roundStartCumulativeScores = { ...cumulativeScores };
 let contestSeed = "";
 let roundSeed = "";
 let roundResources = { gold: 100, tears: 0 };
@@ -325,6 +332,8 @@ function resetContestProgress() {
     { id: "player" },
     ...RIVAL_SPECS,
   ]);
+  roundStartCompletedRounds = 0;
+  roundStartCumulativeScores = { ...cumulativeScores };
   document.body.dataset.completedRounds = "0";
   document.body.dataset.contestRounds = String(totalRounds);
   document.body.dataset.cumulativeScores = JSON.stringify(cumulativeScores);
@@ -352,7 +361,11 @@ function createRoundState(seed, resources, floor) {
     baseMap: playerBaseMap,
     startingGold: playerResources.gold,
     startingTears: playerResources.tears,
-    obstacleCost: discountedBuildingCost(TOOLS.crate.cost, selectedAugments),
+    obstacleCost: discountedBuildingCost(
+      TOOLS.crate.cost,
+      selectedAugments,
+      TOOLS.crate.id,
+    ),
     refundRate: 1,
     stepDurationMs: STEP_DURATION_MS,
     turnPenaltyMs: TURN_PENALTY_MS,
@@ -363,9 +376,14 @@ function createRoundState(seed, resources, floor) {
   return { sharedMap, playerBaseMap, playerResources, state };
 }
 
-function initRound(seed, waitForWelcome = false) {
+function initRound(seed, waitForWelcome = false, options = {}) {
   phaseToken += 1;
-  roundNumber += 1;
+  const nextRoundNumber = options.roundNumber ?? roundNumber + 1;
+  if (!options.replay) {
+    roundStartCompletedRounds = completedRounds;
+    roundStartCumulativeScores = { ...cumulativeScores };
+  }
+  roundNumber = nextRoundNumber;
   currentFloor = floorConfig(roundNumber);
   roundSeed = seed;
   rivalRoundResources = generateRoundResources(seed, {
@@ -400,6 +418,10 @@ function initRound(seed, waitForWelcome = false) {
   document.body.dataset.floorWidth = String(currentFloor.width);
   document.body.dataset.floorHeight = String(currentFloor.height);
   document.body.dataset.buildDurationMs = String(currentFloor.buildDurationMs);
+  document.body.dataset.neutralSlowTowers = String(baseMap.baseSlowTowers.length);
+  document.body.dataset.neutralSpeedTowers = String(baseMap.baseSpeedTowers.length);
+  document.body.dataset.portalPairs = String(baseMap.portalPair.length / 2);
+  document.body.dataset.trapDoors = String(baseMap.baseTrapDoors.length);
   dom.seed.textContent = seed;
   const shapeLabel = MAP_SHAPE_LABELS[baseMap.mapShape] ?? baseMap.mapShape;
   dom.shape.textContent = shapeLabel;
@@ -426,7 +448,10 @@ function beginBuild() {
   if (neutralSpeedCount > 0) {
     towerNotes.push(`${neutralSpeedCount} neutral speed ${neutralSpeedCount === 1 ? "tower" : "towers"}`);
   }
-  if ((baseMap.portalPair?.length ?? 0) === 2) towerNotes.push("linked portal pair");
+  const portalPairCount = (baseMap.portalPair?.length ?? 0) / 2;
+  if (portalPairCount > 0) {
+    towerNotes.push(`${portalPairCount} linked portal ${portalPairCount === 1 ? "pair" : "pairs"}`);
+  }
   if (trapDoorCount > 0) {
     towerNotes.push(`${trapDoorCount} trap ${trapDoorCount === 1 ? "door" : "doors"}`);
   }
@@ -446,14 +471,19 @@ function ownedAugmentCopy() {
 }
 
 function openAugmentDraft() {
-  if (roundNumber >= totalRounds) return;
+  if (!hasAugmentDraftAfterFloor(roundNumber)) return;
   phase = "augment";
+  const augmentTier = augmentTierForDraft(roundNumber);
   pendingAugmentChoices = draftAugmentChoices(
     contestSeed,
     roundNumber,
     selectedAugments,
   );
-  dom.augmentEyebrow.textContent = `Floor ${roundNumber} cleared · ${totalRounds - roundNumber} remaining`;
+  dom.augmentModal.dataset.tier = augmentTier;
+  document.body.dataset.augmentTier = augmentTier;
+  dom.augmentEyebrow.textContent = `${augmentTier === AUGMENT_TIERS.RADIANT ? "Radiant" : "Gold"} augment · Floor ${roundNumber} cleared`;
+  dom.augmentTitle.textContent = `Choose a ${augmentTier} augment.`;
+  dom.augmentCopy.textContent = `Pick one ${augmentTier} upgrade. It applies to every remaining floor in this run.`;
   dom.augmentChoices.innerHTML = pendingAugmentChoices
     .map((augmentId) => {
       const augment = AUGMENTS[augmentId];
@@ -522,7 +552,7 @@ function playerTool(toolId) {
   if (!tool || !["crate", "fence", "tower"].includes(tool.id)) return tool;
   return {
     ...tool,
-    cost: discountedBuildingCost(tool.cost, selectedAugments),
+    cost: discountedBuildingCost(tool.cost, selectedAugments, tool.id),
   };
 }
 
@@ -1160,7 +1190,7 @@ async function copyChallengeLink(button, includeResult = false) {
         ? "Challenge copied, but localhost only works on this computer. Publish the site before sending it."
         : includeResult && contestIsComplete()
           ? "Your score challenge is ready to send."
-          : "Challenge link copied. Everyone will receive the same four-floor run and augment drafts.",
+          : "Challenge link copied. Everyone will receive the same five-floor run and augment drafts.",
       isLocalChallengeLink() ? "neutral" : "success",
     );
   } catch {
@@ -1229,7 +1259,7 @@ function updateCanvasLabel(contestant = displayedContestant()) {
   const owner = contestant.isPlayer ? "your maze" : `${contestant.name}'s maze`;
   dom.canvas.setAttribute(
     "aria-label",
-    `Viewing ${owner} on a ${shapeLabel} field, ${state.width} columns by ${state.height} rows, seed ${roundSeed}, ${state.endlessFeast ? "Endless Feast checkpoint present" : "no Endless Feast checkpoint"}, ${state.baseSlowTowers?.length ?? 0} neutral slow towers, ${state.baseSpeedTowers?.length ?? 0} neutral speed towers, ${(state.portalPair?.length ?? 0) === 2 ? "linked portal present" : "no linked portal"}, ${state.baseTrapDoors?.length ?? 0} trap doors`,
+    `Viewing ${owner} on a ${shapeLabel} field, ${state.width} columns by ${state.height} rows, seed ${roundSeed}, ${state.endlessFeast ? "Endless Feast checkpoint present" : "no Endless Feast checkpoint"}, ${state.baseSlowTowers?.length ?? 0} neutral slow towers, ${state.baseSpeedTowers?.length ?? 0} neutral speed towers, ${(state.portalPair?.length ?? 0) / 2} linked portal pairs, ${state.baseTrapDoors?.length ?? 0} trap doors`,
   );
 }
 
@@ -1595,7 +1625,7 @@ function finishRound() {
       ? `Your runners accumulated ${formatSeconds(playerCumulativeResult.totalScoreMs)} across all ${completedRounds} floors${sharedContest ? ", tying for the highest total" : " — the highest cumulative time in the field"}.`
       : `Your cumulative time was ${formatSeconds(playerCumulativeResult.totalScoreMs)}, placing ${playerCumulativeResult.rank}${ordinalSuffix(playerCumulativeResult.rank)} overall. ${names(cumulativeWinners)} finished with ${formatSeconds(cumulativeWinners[0].totalScoreMs)}.`;
     dom.nextRoundButton.textContent = "Begin a new run";
-    dom.replayRoundButton.textContent = "Replay final floor as a new run";
+    dom.replayRoundButton.textContent = "Replay final floor";
     dom.resultShareButton.textContent = "Copy my score challenge";
   } else {
     const sharedRound = roundWinners.length > 1;
@@ -1608,8 +1638,10 @@ function finishRound() {
         ? `${names(roundWinners)} share the floor.`
         : `${roundWinners[0].name} takes the floor.`;
     dom.resultCopy.textContent = `You banked ${formatSeconds(playerRoundResult.state.scoreMs)} on this floor for ${formatSeconds(playerCumulativeResult.totalScoreMs)} total. ${names(cumulativeWinners)} ${cumulativeWinners.length === 1 ? "leads" : "lead"} the run with ${formatSeconds(cumulativeWinners[0].totalScoreMs)}.`;
-    dom.nextRoundButton.textContent = "Choose an augment";
-    dom.replayRoundButton.textContent = "Replay floor as a new run";
+    dom.nextRoundButton.textContent = hasAugmentDraftAfterFloor(roundNumber)
+      ? "Choose an augment"
+      : `Continue to floor ${roundNumber + 1}`;
+    dom.replayRoundButton.textContent = "Replay this floor";
     dom.resultShareButton.textContent = "Copy challenge link";
   }
 
@@ -2279,17 +2311,20 @@ function drawSpeedTower(cell, now) {
   context.restore();
 }
 
-function portalHasDeactivated() {
+function portalHasDeactivated(pairIndex) {
   if (phase !== "run" && phase !== "results") return false;
   return (renderState.runnerSimulation?.portalApplications ?? []).some(
-    (application) => application.atMs <= runElapsedMs,
+    (application) =>
+      application.pairIndex === pairIndex && application.atMs <= runElapsedMs,
   );
 }
 
 function drawLinkedPortal(cell, index, now) {
   const point = cellCenter(cell);
   const size = geometry.cell;
-  const inactive = portalHasDeactivated();
+  const pairIndex = Math.floor(index / 2);
+  const endIndex = index % 2;
+  const inactive = portalHasDeactivated(pairIndex);
   const pulse = inactive ? 1 : 1 + Math.sin(now / 190 + index * Math.PI) * 0.08;
   context.save();
   context.translate(point.x, point.y);
@@ -2301,7 +2336,11 @@ function drawLinkedPortal(cell, index, now) {
   context.beginPath();
   context.arc(0, 0, size * 0.5 * pulse, 0, Math.PI * 2);
   context.fill();
-  context.strokeStyle = inactive ? "#72777e" : index === 0 ? "#c98cff" : "#70d9ff";
+  context.strokeStyle = inactive
+    ? "#72777e"
+    : endIndex === 0
+      ? `hsl(${282 + pairIndex * 67} 76% 73%)`
+      : `hsl(${194 + pairIndex * 67} 78% 70%)`;
   context.lineWidth = Math.max(2, size * 0.065);
   context.shadowColor = context.strokeStyle;
   context.shadowBlur = inactive ? 0 : size * 0.22;
@@ -2315,10 +2354,10 @@ function drawLinkedPortal(cell, index, now) {
   context.ellipse(0, 0, size * 0.21, size * 0.12, 0, 0, Math.PI * 2);
   context.stroke();
   context.fillStyle = inactive ? "#a8acb1" : "#f3e6ff";
-  context.font = `800 ${Math.max(8, size * 0.16)}px ui-sans-serif, system-ui, sans-serif`;
+  context.font = `800 ${Math.max(8, size * 0.14)}px ui-sans-serif, system-ui, sans-serif`;
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillText(inactive ? "OFF" : index === 0 ? "A" : "B", 0, 0);
+  context.fillText(inactive ? "OFF" : `${pairIndex + 1}${endIndex === 0 ? "A" : "B"}`, 0, 0);
   context.restore();
 }
 
@@ -2677,7 +2716,7 @@ dom.nextRoundButton.addEventListener("click", () => {
     isSharedChallenge = false;
     challengeTargetMs = null;
     dom.roundCount.disabled = true;
-    dom.roundCountHelp.textContent = "Four floors. Each grows by 2×2 cells and grants 20 more build seconds.";
+    dom.roundCountHelp.textContent = "Five floors. Each grows by 2×2 cells and grants 20 more build seconds.";
     dom.challengeTarget.hidden = true;
     document.body.dataset.sharedChallenge = "false";
     const cleanUrl = new URL(window.location.href);
@@ -2686,15 +2725,27 @@ dom.nextRoundButton.addEventListener("click", () => {
     window.history.replaceState(null, "", cleanUrl);
     prepareContest(makeSeed(), true);
     openModal(dom.welcomeModal, dom.startButton);
-  } else {
+  } else if (hasAugmentDraftAfterFloor(roundNumber)) {
     openAugmentDraft();
+  } else {
+    initRound(deriveContestRoundSeed(contestSeed, roundNumber + 1));
+    window.requestAnimationFrame(() => dom.canvas.focus());
+    tone("start");
   }
 });
 dom.replayRoundButton.addEventListener("click", () => {
   const seed = roundSeed;
+  const replayedRound = roundNumber;
   closeModal(dom.resultModal, false);
   dom.phaseBanner.textContent = "";
-  prepareContest(seed, false);
+  completedRounds = roundStartCompletedRounds;
+  cumulativeScores = { ...roundStartCumulativeScores };
+  pendingAugmentChoices = [];
+  document.body.dataset.completedRounds = String(completedRounds);
+  document.body.dataset.cumulativeScores = JSON.stringify(cumulativeScores);
+  document.body.dataset.contestComplete = "false";
+  document.body.dataset.augmentChoices = "[]";
+  initRound(seed, false, { replay: true, roundNumber: replayedRound });
   window.requestAnimationFrame(() => dom.canvas.focus());
   tone("start");
 });
@@ -2842,8 +2893,8 @@ dom.roundCount.max = String(RUN_FLOORS);
 dom.roundCount.value = String(totalRounds);
 dom.roundCount.disabled = true;
 dom.roundCountHelp.textContent = isSharedChallenge
-  ? "Challenge depth is locked: every friend receives the same four-floor run."
-  : "Four floors. Each grows by 2×2 cells and grants 20 more build seconds.";
+  ? "Challenge depth is locked: every friend receives the same five-floor run."
+  : "Five floors. Each grows by 2×2 cells and grants 20 more build seconds.";
 dom.challengeTarget.hidden = challengeTargetMs === null;
 if (challengeTargetMs !== null) {
   dom.challengeTarget.textContent = `Friend challenge: beat ${formatSeconds(challengeTargetMs)} across all ${totalRounds} floors.`;

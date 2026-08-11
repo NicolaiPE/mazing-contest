@@ -1,10 +1,10 @@
 # Mazing Contest
 
-A local browser roguelike inspired by the maze-building contest format: descend through four seeded floors, draft lasting augments, and try to force your runner along the longest legal route.
+A local browser roguelike inspired by the maze-building contest format: descend through five seeded floors, draft lasting augments, and try to force your runner along the longest legal route.
 
 ## Share with friends
 
-Publish this folder on any static HTTPS host, then use **Invite friends**. The copied challenge URL locks the four-floor run, including floor seeds, base resources, augment drafts, and AI opponents. After the final floor, **Copy my score challenge** embeds your cumulative time as the target your friends must beat.
+Publish this folder on any static HTTPS host, then use **Invite friends**. The copied challenge URL locks the five-floor run, including floor seeds, base resources, augment drafts, and AI opponents. After the final floor, **Copy my score challenge** embeds your cumulative time as the target your friends must beat.
 
 No game server or account is required. This is an asynchronous, casual challenge: friends play independently and score targets in URLs are not cheat-proof. A `localhost` URL only works on the computer running it, so the folder must be published before that link can be sent over the internet.
 
@@ -28,9 +28,10 @@ If you already have another static web server, serve this directory through it i
 
 ## How a run works
 
-- A run has four floors. Floor 1 is 20×15 with a 60-second build phase; each later floor grows by 2×2 cells and grants 20 more seconds, ending at 26×21 and 120 seconds.
-- After floors 1–3, choose one of two deterministic, previously unowned augments. It applies to every remaining floor. The initial pool is **Deep Pockets** (+50 starting gold), **Echoing Lament** (slow towers affect all eight adjacent tiles), **Twisted Haste** (neutral speed towers become slow towers), and **Salvager's Eye** (crates, fences, and guard towers cost 2 less).
-- You, your friends, and three deterministic rivals receive terrain generated from the challenge. Neutral slow towers, neutral speed towers, and Trap Doors each use the same independent count distribution: 58% none, 36% one, and 6% two. Separately, a linked two-ended portal has a 25% chance to appear before augments are applied.
+- A run has five floors. Floor 1 is 20×15 with a 60-second build phase; each later floor grows by 2×2 cells and grants 20 more seconds, ending at 28×23 and 140 seconds.
+- After floors 1 and 2, choose one of two deterministic, previously unowned **gold** augments: **Deep Pockets** (+30 starting gold), **Echoing Lament** (slow towers affect all eight adjacent tiles), **Twisted Haste** (neutral speed towers become slow towers), or **Scavenger** (crates, fences, and guard towers cost 1/3/6 less). After floor 3, choose a **radiant** augment: **Gates of Hades** (+1 portal pair), **Trap Queen** (+3 Trap Doors), **Crushing Cold** (+2 slow towers), or **Juxtaposition** (+4 slow and +4 speed towers). Every choice persists on later floors. Floor 4 leads directly into floor 5 without another draft.
+- Replaying a floor restores its original seed, generated resources, owned augments, and cumulative score from before that floor, so the retried result replaces the previous attempt.
+- You, your friends, and three deterministic rivals receive terrain generated from the challenge. Neutral slow towers, neutral speed towers, and Trap Doors each use the same independent count distribution: 58% none, 36% one, and 6% two. Separately, a linked two-ended portal has a 25% chance to appear before augments are applied. Portal endpoints always spawn at least three eight-direction grid squares apart.
 - Vesper Quill is the expert rival. Vesper considers a small, route-focused beam of two-move plans, including cheaper piece combinations, while a hard cap of 20,000 placement previews per floor keeps the extra work bounded. The other rivals retain their lighter greedy strategies.
 - The seed also chooses a **rectangle**, **diamond**, **donut**, or four-petal **flower** silhouette. Dark cells outside the silhouette—and the donut's center—are unwalkable and unbuildable.
 - The seed also gives every contestant the same random budget: 80–250 gold and 0–2 Tears of the Runner.
@@ -38,14 +39,14 @@ If you already have another static web server, serve this directory through it i
 - The **Demolish** tool removes one generated rock or neutral slow tower for 8 gold. Neutral speed towers, linked portals, and Trap Doors cannot be removed. Removing your own pieces still returns their full cost during the build phase.
 - One Tear builds a one-cell **Tower of Lament**. When the runner enters a cardinally adjacent cell, the tower halves its speed for five seconds, then needs five seconds before it can trigger again. Slows refresh but do not stack.
 - A neutral **speed tower** increases the runner's movement speed by 50% for five seconds whenever the runner enters a cardinally adjacent cell. It has no cooldown, so a later adjacent-square entry refreshes the effect. Speed and slow effects multiply, so simultaneous 1.5x and 0.5x effects produce 0.75x movement.
-- A linked **portal** has two protected ends in random open cells. Entering either active end instantly moves the runner to the other; both ends then deactivate for the rest of that run. The runner never seeks a portal as a shortcut—it follows the ordinary shortest route, and reroutes normally from the exit only if that route happens to enter one.
+- A linked **portal pair** has two protected ends in random open cells. Entering either active end instantly moves the runner to its partner; that pair then deactivates for the rest of the run. Multiple pairs operate independently. The runner never seeks a portal as a shortcut—it follows the ordinary shortest route, and reroutes normally from the exit only if that route happens to enter one.
 - A **Trap Door** is a protected, traversable floor object. When an ordinary shortest route crosses one, it launches the runner up to three squares in the current direction in the time of one normal square, jumping over intervening blockers. At a map edge it lands on the last valid square before the boundary, then deactivates. The runner never detours to use one.
 - **Endless Feast** appears in 20% of floors as a mandatory, traversable checkpoint. The runner must complete the entrance-to-Feast leg before routing from the Feast to the portal, and displays **Insatiable Hunger** until reaching it. Its own tile is protected; you can build on the surrounding squares as long as at least one cardinal side and both route legs remain open.
 - Runners use the shortest eight-direction route toward Endless Feast or the goal without considering portals or Trap Doors as shortcuts. If an effect moves a runner, it calculates a fresh ordinary shortest route from its new square. A diagonal move costs about 1.414 tiles and can round one blocked side cell, but it is forbidden when both side cells are blocked, so runners cannot squeeze between diagonally touching objects.
 - A move is atomic. It is free if it overlaps terrain, leaves the board, costs too much, or seals the only entrance-to-portal route.
 - Press **Release runners** when ready, or wait for the build timer to expire.
 - During the race, select any contestant in the standings—or press **1–4**—to spectate their maze and runner in real time.
-- All scores are derived from the locked route, not animation frame rate. After four floors, the contestant with the highest cumulative runner time wins.
+- All scores are derived from the locked route, not animation frame rate. After five floors, the contestant with the highest cumulative runner time wins.
 
 ## Controls
 
@@ -84,6 +85,6 @@ npm test
 
 Without Node.js, start the local server and open <http://localhost:8000/tests/browser-smoke.html>. It reports a visible pass/fail result using the same ES module the game loads.
 
-Append `?seed=YOUR-SEED` to reproduce a run locally. Shareable links use `?challenge=YOUR-SEED&rounds=4`; later floor seeds and augment drafts are derived deterministically from that challenge code. If present, `pyproject.toml` is an unused scaffold artifact; Python is not required.
+Append `?seed=YOUR-SEED` to reproduce a run locally. Shareable links use `?challenge=YOUR-SEED&rounds=5`; later floor seeds and augment drafts are derived deterministically from that challenge code. If present, `pyproject.toml` is an unused scaffold artifact; Python is not required.
 
 Equal runner times share a rank. The game rules are intentionally client-side for this prototype. A competitive online version should keep the same serializable commands, but make a server authoritative over the seed, timer, obstacle catalog, placement validation, and final score.
