@@ -131,6 +131,18 @@ button:disabled {
   white-space: nowrap;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.online-status-button.connected {
+  border-color: #819e5b;
+  color: #e4f7bf;
+  background: linear-gradient(180deg, #40522d, #28361f);
+}
+
 .brand-mark {
   position: relative;
   display: grid;
@@ -1810,6 +1822,224 @@ footer kbd,
   margin: 0;
 }
 
+.modal-card .welcome-actions .online-button {
+  border-color: #7e5b9b;
+  background: linear-gradient(180deg, #74518b, #48345a);
+}
+
+.lobby-card {
+  max-width: 600px;
+}
+
+.modal-card .modal-close-button {
+  position: absolute;
+  top: 9px;
+  right: 12px;
+  z-index: 2;
+  width: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  margin: 0;
+  padding: 0;
+  border-color: rgba(91, 57, 24, 0.35);
+  border-radius: 50%;
+  color: #553718;
+  font-size: 1.25rem;
+  line-height: 1;
+  background: rgba(255, 246, 207, 0.38);
+}
+
+.lobby-crest {
+  color: #eadcff;
+  background: radial-gradient(circle at 34% 28%, #76588d, #372642 70%);
+}
+
+.lobby-field {
+  display: grid;
+  gap: 5px;
+  margin-top: 12px;
+  color: #4d321a;
+  font-size: 0.71rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lobby-field input {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid #795027;
+  border-radius: 4px;
+  color: #321f10;
+  font-weight: 750;
+  text-transform: none;
+  background: #f4e6bd;
+  box-shadow: inset 0 1px 3px rgba(75, 48, 21, 0.2);
+}
+
+.lobby-field input:focus-visible {
+  outline: 3px solid #8f5f28;
+  outline-offset: 2px;
+}
+
+.lobby-field small {
+  color: #725838;
+  font-size: 0.6rem;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+}
+
+.lobby-join-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.modal-card .lobby-join-row button {
+  min-width: 135px;
+  margin: 0 0 1px;
+}
+
+.lobby-code-input {
+  letter-spacing: 0.22em;
+  text-transform: uppercase !important;
+}
+
+.lobby-code-panel {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 12px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid rgba(90, 54, 20, 0.3);
+  border-radius: 5px;
+  background: rgba(255, 249, 220, 0.22);
+}
+
+.lobby-code-panel > span {
+  color: #725838;
+  font-size: 0.63rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.lobby-code-panel > strong {
+  grid-row: 2;
+  color: #3e2815;
+  font-family: var(--font-display);
+  font-size: 1.45rem;
+  letter-spacing: 0.18em;
+}
+
+.modal-card .lobby-code-panel button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 110px;
+  margin: 0;
+}
+
+.modal-card .lobby-connection-status {
+  margin: 10px 0;
+  color: #725838;
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.lobby-player-list {
+  display: grid;
+  gap: 7px;
+}
+
+.lobby-player {
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid rgba(90, 54, 20, 0.24);
+  border-radius: 4px;
+  color: #49321d;
+  background: rgba(255, 249, 220, 0.22);
+}
+
+.lobby-player > i {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 2px rgba(65, 40, 18, 0.14);
+}
+
+.lobby-player strong,
+.lobby-player small {
+  display: block;
+}
+
+.lobby-player small {
+  color: #806644;
+  font-size: 0.61rem;
+}
+
+.lobby-player b {
+  color: #76502b;
+  font-size: 0.64rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lobby-player b.ready {
+  color: #45602f;
+}
+
+.modal-card .lobby-privacy-note {
+  margin: 12px 0 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(67, 81, 118, 0.28);
+  border-radius: 4px;
+  color: #454d68;
+  font-size: 0.65rem;
+  line-height: 1.4;
+  background: rgba(211, 219, 244, 0.22);
+}
+
+.lobby-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 15px;
+}
+
+.modal-card .lobby-actions button {
+  margin: 0;
+}
+
+.modal-card .lobby-actions .text-button {
+  min-width: 100%;
+  min-height: 32px;
+  border: 0;
+  color: #704829;
+  text-decoration: underline;
+  background: transparent;
+  box-shadow: none;
+}
+
+.modal-card .lobby-error {
+  margin: 12px 0 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(139, 55, 40, 0.45);
+  border-radius: 4px;
+  color: #7b3027;
+  font-size: 0.67rem;
+  font-weight: 750;
+  background: rgba(176, 68, 47, 0.1);
+}
+
 .modal-card .challenge-target,
 .modal-card .challenge-result {
   padding: 10px 12px;
@@ -2132,6 +2362,22 @@ footer kbd,
   }
 
   .topbar .share-button {
+    width: auto;
+  }
+
+  .topbar-actions {
+    width: 100%;
+  }
+
+  .topbar-actions button {
+    flex: 1;
+  }
+
+  .lobby-join-row {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-card .lobby-join-row button {
     width: 100%;
   }
 

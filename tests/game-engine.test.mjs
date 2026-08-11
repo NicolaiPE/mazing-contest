@@ -57,6 +57,180 @@ import {
   hasAugmentDraftAfterFloor,
   mapGenerationBonuses,
 } from "../src/roguelike.js";
+import {
+  DEFAULT_LOBBY_SERVER_URL,
+  createOnlineInviteUrl,
+  lobbyWebSocketUrl,
+  normalizeLobbyCode,
+  normalizeLobbyServerUrl,
+  normalizePlayerName,
+} from "../src/online-lobby.js";
+import {
+  LOBBY_PHASES,
+  connectLobbyPlayer,
+  createLobbyState,
+  markPlayerReadyForNextFloor,
+  publicLobbyState,
+  removeLobbyPlayer,
+  setLobbyReady,
+  startLobbyRun,
+  submitMaze,
+  updateMazeDraft,
+} from "../online/src/lobby-state.js";
+
+test("online lobby transfers host ownership when someone leaves before a run", () => {
+  const room = createLobbyState({
+    code: "LEAVE2",
+    hostToken: "host-token-123456",
+    hostName: "Host",
+    hostId: "host",
+    now: 1_000,
+  });
+  connectLobbyPlayer(room, {
+    token: "guest-token-12345",
+    name: "Guest",
+    playerId: "guest",
+    now: 1_001,
+  });
+  assert.equal(removeLobbyPlayer(room, "host", 1_002), true);
+  assert.equal(room.hostId, "guest");
+  assert.deepEqual(room.players.map((player) => player.id), ["guest"]);
+});
+
+test("online lobby URLs normalize safely and preserve GitHub Pages project paths", () => {
+  assert.equal(
+    DEFAULT_LOBBY_SERVER_URL,
+    "https://mazing-contest-lobbies.mazingcontest.workers.dev",
+  );
+  assert.equal(normalizeLobbyCode(" ab-c23 4 "), "ABC234");
+  assert.equal(normalizeLobbyCode("short"), null);
+  assert.equal(normalizePlayerName("  Maze   Friend  "), "Maze Friend");
+  assert.equal(
+    normalizeLobbyServerUrl("https://rooms.example.workers.dev/"),
+    "https://rooms.example.workers.dev",
+  );
+  assert.equal(
+    createOnlineInviteUrl("https://example.github.io/mazing/?seed=OLD#x", {
+      serverUrl: "https://rooms.example.workers.dev",
+      roomCode: "ABC234",
+    }),
+    "https://example.github.io/mazing/?lobby=ABC234&server=https%3A%2F%2Frooms.example.workers.dev",
+  );
+  assert.equal(
+    lobbyWebSocketUrl("https://rooms.example.workers.dev", {
+      roomCode: "ABC234",
+      playerName: "Maze Friend",
+      token: "1234567890abcdef",
+      create: true,
+    }),
+    "wss://rooms.example.workers.dev/lobbies/ABC234?name=Maze+Friend&token=1234567890abcdef&create=1",
+  );
+});
+
+test("online lobby keeps builds private until every maze is submitted", () => {
+  const room = createLobbyState({
+    code: "ABC234",
+    hostToken: "host-token-123456",
+    hostName: "Host",
+    hostId: "host",
+    now: 1_000,
+  });
+  connectLobbyPlayer(room, {
+    token: "guest-token-12345",
+    name: "Guest",
+    playerId: "guest",
+    now: 1_001,
+  });
+  setLobbyReady(room, "host", true, 1_002);
+  setLobbyReady(room, "guest", true, 1_003);
+  startLobbyRun(room, "host", {
+    contestSeed: "ONLINE1",
+    connectedPlayerIds: ["host", "guest"],
+    now: 2_000,
+  });
+  assert.equal(room.phase, LOBBY_PHASES.BUILD);
+  assert.equal(room.floor, 1);
+  assert.equal(room.buildDeadline, 62_000);
+
+  const floor = floorConfig(1);
+  const snapshot = (scoreMs) => ({
+    floor: 1,
+    augmentIds: [],
+    state: {
+      seed: deriveContestRoundSeed("ONLINE1", 1),
+      width: floor.width,
+      height: floor.height,
+      scoreMs,
+      revision: 2,
+      obstacles: [{ x: 3, y: 3 }],
+    },
+  });
+  updateMazeDraft(room, "host", snapshot(12_000), 3_000);
+  updateMazeDraft(room, "guest", snapshot(14_000), 3_001);
+  const hiddenState = publicLobbyState(room, ["host", "guest"], null);
+  assert.equal(hiddenState.reveal, null);
+  assert.equal(hiddenState.ownDraft, null);
+  assert(!JSON.stringify(hiddenState).includes("14000"));
+  assert.equal(publicLobbyState(room, ["host", "guest"], "host").ownDraft.state.scoreMs, 12_000);
+
+  assert.equal(submitMaze(room, "host", snapshot(12_000), 4_000), false);
+  assert.equal(room.phase, LOBBY_PHASES.BUILD);
+  assert.equal(publicLobbyState(room, ["host", "guest"], "guest").reveal, null);
+  assert.equal(submitMaze(room, "guest", snapshot(14_000), 4_001), true);
+  assert.equal(room.phase, LOBBY_PHASES.REVEAL);
+  const revealedState = publicLobbyState(room, ["host", "guest"], "host");
+  assert.equal(revealedState.reveal.length, 2);
+  assert.deepEqual(
+    revealedState.players.map((player) => player.totalScoreMs),
+    [12_000, 14_000],
+  );
+
+  const goldAugments = Object.values(AUGMENTS).filter(
+    (augment) => augment.tier === AUGMENT_TIERS.GOLD,
+  );
+  assert.equal(
+    markPlayerReadyForNextFloor(room, "host", [goldAugments[0].id], 5_000).advanced,
+    false,
+  );
+  const advance = markPlayerReadyForNextFloor(room, "guest", [goldAugments[1].id], 5_001);
+  assert.equal(advance.advanced, true);
+  assert.equal(room.phase, LOBBY_PHASES.BUILD);
+  assert.equal(room.floor, 2);
+  assert.equal(room.buildDeadline, 85_001);
+});
+
+test("online lobby advances floor four directly to floor five without an augment", () => {
+  const room = createLobbyState({
+    code: "FLOOR5",
+    hostToken: "host-token-123456",
+    hostName: "Host",
+    hostId: "host",
+    now: 1_000,
+  });
+  connectLobbyPlayer(room, {
+    token: "guest-token-12345",
+    name: "Guest",
+    playerId: "guest",
+    now: 1_001,
+  });
+  const gold = Object.values(AUGMENTS).filter((augment) => augment.tier === AUGMENT_TIERS.GOLD);
+  const radiant = Object.values(AUGMENTS).find((augment) => augment.tier === AUGMENT_TIERS.RADIANT);
+  const owned = [gold[0].id, gold[1].id, radiant.id];
+  room.phase = LOBBY_PHASES.REVEAL;
+  room.contestSeed = "ONLINE5";
+  room.floor = 4;
+  for (const player of room.players) player.augmentIds = [...owned];
+  assert.throws(
+    () => markPlayerReadyForNextFloor(room, "host", [...owned, gold[2].id], 2_000),
+    /No augment is available/,
+  );
+  assert.equal(markPlayerReadyForNextFloor(room, "host", owned, 2_001).advanced, false);
+  const advanced = markPlayerReadyForNextFloor(room, "guest", owned, 2_002);
+  assert.equal(advanced.advanced, true);
+  assert.equal(room.phase, LOBBY_PHASES.BUILD);
+  assert.equal(room.floor, 5);
+  assert.equal(room.buildDeadline, 142_002);
+});
 
 test("roguelike floors grow by 2x2 and grant 20 more build seconds", () => {
   assert.equal(RUN_FLOORS, 5);

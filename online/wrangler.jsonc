@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "mazing-contest-lobbies",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-08-11",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LOBBIES",
+        "class_name": "Lobby"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Lobby"]
+    }
+  ],
+  "vars": {
+    "ALLOWED_ORIGINS": "https://nicolaipe.github.io"
+  }
+}

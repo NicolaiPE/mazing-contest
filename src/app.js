@@ -40,6 +40,16 @@ import {
   hasAugmentDraftAfterFloor,
 } from "./roguelike.js";
 import { fitBoardGeometry } from "./canvas-geometry.js";
+import {
+  DEFAULT_LOBBY_SERVER_URL,
+  LobbyConnection,
+  createLobbyCode,
+  createOnlineInviteUrl,
+  createReconnectToken,
+  normalizeLobbyCode,
+  normalizeLobbyServerUrl,
+  normalizePlayerName,
+} from "./online-lobby.js";
 
 const ROCK_DENSITY = 0.115;
 const MIN_STARTING_GOLD = 80;
@@ -199,6 +209,7 @@ const dom = {
   shareChallengeButton: document.querySelector("#shareChallengeButton"),
   welcomeShareButton: document.querySelector("#welcomeShareButton"),
   resultShareButton: document.querySelector("#resultShareButton"),
+  reviewMazesButton: document.querySelector("#reviewMazesButton"),
   challengeTarget: document.querySelector("#challengeTarget"),
   roundCountHelp: document.querySelector("#roundCountHelp"),
   augmentEyebrow: document.querySelector("#augmentEyebrow"),
@@ -206,6 +217,27 @@ const dom = {
   augmentCopy: document.querySelector("#augmentCopy"),
   augmentChoices: document.querySelector("#augmentChoices"),
   augmentOwned: document.querySelector("#augmentOwned"),
+  onlineStatusButton: document.querySelector("#onlineStatusButton"),
+  openOnlineButton: document.querySelector("#openOnlineButton"),
+  lobbyModal: document.querySelector("#lobbyModal"),
+  lobbyTitle: document.querySelector("#lobbyTitle"),
+  lobbyCopy: document.querySelector("#lobbyCopy"),
+  closeLobbyButton: document.querySelector("#closeLobbyButton"),
+  onlineSetup: document.querySelector("#onlineSetup"),
+  onlineRoom: document.querySelector("#onlineRoom"),
+  onlineNameInput: document.querySelector("#onlineNameInput"),
+  onlineServerInput: document.querySelector("#onlineServerInput"),
+  onlineCodeInput: document.querySelector("#onlineCodeInput"),
+  createLobbyButton: document.querySelector("#createLobbyButton"),
+  joinLobbyButton: document.querySelector("#joinLobbyButton"),
+  onlineLobbyCode: document.querySelector("#onlineLobbyCode"),
+  onlineConnectionStatus: document.querySelector("#onlineConnectionStatus"),
+  onlinePlayerList: document.querySelector("#onlinePlayerList"),
+  copyLobbyInviteButton: document.querySelector("#copyLobbyInviteButton"),
+  readyLobbyButton: document.querySelector("#readyLobbyButton"),
+  startLobbyButton: document.querySelector("#startLobbyButton"),
+  leaveLobbyButton: document.querySelector("#leaveLobbyButton"),
+  onlineLobbyError: document.querySelector("#onlineLobbyError"),
 };
 
 const context = dom.canvas.getContext("2d");
@@ -255,6 +287,20 @@ let audioContext = null;
 let pointerGesture = null;
 let canvasNeedsResize = true;
 let lastCanvasDraw = 0;
+let onlineSyncTimer = 0;
+const onlineSession = {
+  connection: null,
+  status: "disconnected",
+  serverUrl: null,
+  roomCode: null,
+  token: null,
+  youId: null,
+  room: null,
+  clockOffsetMs: 0,
+  activeRun: false,
+  startedFloor: 0,
+  revealedFloor: 0,
+};
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 window.addEventListener("error", (event) => {
@@ -319,7 +365,22 @@ function selectedRoundCount() {
 }
 
 function updateStartButtonLabel() {
-  dom.startButton.textContent = `Start ${RUN_FLOORS}-floor run`;
+  dom.startButton.textContent = "Play solo";
+}
+
+function onlinePlayer() {
+  return onlineSession.room?.players.find((player) => player.id === onlineSession.youId) ?? null;
+}
+
+function onlineScoreId(playerId) {
+  return playerId === onlineSession.youId ? "player" : playerId;
+}
+
+function scoreContestantsForCurrentMode() {
+  if (onlineSession.activeRun && onlineSession.room?.players?.length > 0) {
+    return onlineSession.room.players.map((player) => ({ id: onlineScoreId(player.id) }));
+  }
+  return [{ id: "player" }, ...RIVAL_SPECS];
 }
 
 function resetContestProgress() {
@@ -328,10 +389,7 @@ function resetContestProgress() {
   currentFloor = floorConfig(1);
   selectedAugments = [];
   pendingAugmentChoices = [];
-  cumulativeScores = createCumulativeScores([
-    { id: "player" },
-    ...RIVAL_SPECS,
-  ]);
+  cumulativeScores = createCumulativeScores(scoreContestantsForCurrentMode());
   roundStartCompletedRounds = 0;
   roundStartCumulativeScores = { ...cumulativeScores };
   document.body.dataset.completedRounds = "0";
@@ -348,32 +406,46 @@ function prepareContest(seed, waitForWelcome = true) {
   initRound(deriveContestRoundSeed(contestSeed, 1), waitForWelcome);
 }
 
-function createRoundState(seed, resources, floor) {
+function createRoundState(seed, resources, floor, augmentIds = selectedAugments) {
   const sharedMap = generateBaseMap({
     seed,
     width: floor.width,
     height: floor.height,
     rockDensity: ROCK_DENSITY,
   });
-  const playerBaseMap = applyMapAugments(sharedMap, selectedAugments);
-  const playerResources = applyResourceAugments(resources, selectedAugments);
+  const playerBaseMap = applyMapAugments(sharedMap, augmentIds);
+  const playerResources = applyResourceAugments(resources, augmentIds);
   const state = createGameState({
     baseMap: playerBaseMap,
     startingGold: playerResources.gold,
     startingTears: playerResources.tears,
     obstacleCost: discountedBuildingCost(
       TOOLS.crate.cost,
-      selectedAugments,
+      augmentIds,
       TOOLS.crate.id,
     ),
     refundRate: 1,
     stepDurationMs: STEP_DURATION_MS,
     turnPenaltyMs: TURN_PENALTY_MS,
-    slowTowerAffectsDiagonals: selectedAugments.includes(
+    slowTowerAffectsDiagonals: augmentIds.includes(
       AUGMENT_IDS.WIDE_LAMENT,
     ),
   });
   return { sharedMap, playerBaseMap, playerResources, state };
+}
+
+function buildOnlineRivals(seed, resources, floor) {
+  return (onlineSession.room?.players ?? [])
+    .filter((player) => player.id !== onlineSession.youId)
+    .map((player) => ({
+      id: player.id,
+      name: player.name,
+      color: player.color,
+      state: createRoundState(seed, resources, floor, player.augmentIds).state,
+      finished: false,
+      online: true,
+      submitted: player.submitted,
+    }));
 }
 
 function initRound(seed, waitForWelcome = false, options = {}) {
@@ -407,8 +479,14 @@ function initRound(seed, waitForWelcome = false, options = {}) {
   buildRemainingMs = currentFloor.buildDurationMs;
   runElapsedMs = 0;
   previewCache = null;
-  rivals = buildRivals(created.sharedMap, seed, rivalRoundResources);
-  assertRivalFairness(rivals, rivalRoundResources, created.sharedMap);
+  if (onlineSession.activeRun) {
+    rivals = buildOnlineRivals(seed, rivalRoundResources, currentFloor);
+    document.body.dataset.rivalsValid = "online";
+    document.body.dataset.rivalAiStats = "[]";
+  } else {
+    rivals = buildRivals(created.sharedMap, seed, rivalRoundResources);
+    assertRivalFairness(rivals, rivalRoundResources, created.sharedMap);
+  }
   phase = waitForWelcome ? "welcome" : "build";
   if (!waitForWelcome) {
     buildDeadline = performance.now() + currentFloor.buildDurationMs;
@@ -509,10 +587,25 @@ function chooseAugment(augmentId) {
   document.body.dataset.augmentChoices = "[]";
   closeModal(dom.augmentModal, false);
   dom.phaseBanner.textContent = "";
-  initRound(deriveContestRoundSeed(contestSeed, roundNumber + 1));
-  window.requestAnimationFrame(() => dom.canvas.focus());
-  showToast(`${AUGMENTS[augmentId].name} acquired for the rest of this run.`, "success");
-  tone("start");
+  if (onlineSession.activeRun) {
+    waitForOnlineNextFloor();
+    showToast(`${AUGMENTS[augmentId].name} acquired. Waiting for the lobby.`, "success");
+  } else {
+    initRound(deriveContestRoundSeed(contestSeed, roundNumber + 1));
+    window.requestAnimationFrame(() => dom.canvas.focus());
+    showToast(`${AUGMENTS[augmentId].name} acquired for the rest of this run.`, "success");
+    tone("start");
+  }
+}
+
+function waitForOnlineNextFloor() {
+  phase = "online-next";
+  onlineSession.connection?.send("next-ready", {
+    augmentIds: [...selectedAugments],
+  });
+  dom.phaseBanner.textContent = "Waiting for the other players";
+  leaderboardRenderKey = "";
+  updateInterface(true);
 }
 
 function rotatedOffsets(tool, turn) {
@@ -1032,6 +1125,7 @@ function placeAt(cell) {
         : " Route held.";
   showToast(`${tool.name} placed.${improvement}`, "success");
   tone("place");
+  syncOnlineMaze();
   updateInterface(true);
   announceCursor();
 }
@@ -1056,6 +1150,7 @@ function removeAt(cell) {
   previewCache = null;
   showToast(`Obstacle removed${refundCopy(result)}.`, "neutral");
   tone("remove");
+  syncOnlineMaze();
   updateInterface(true);
   announceCursor();
 }
@@ -1087,6 +1182,7 @@ function removeGeneratedAt(cell) {
   previewCache = null;
   showToast(`${objectName} demolished · ${result.cost} gold spent.`, "success");
   tone("remove");
+  syncOnlineMaze();
   updateInterface(true);
   announceCursor();
 }
@@ -1117,6 +1213,7 @@ function undoLast() {
       : `${last.objectName} restored · ${last.cost} gold returned.`;
   showToast(message, "neutral");
   tone("remove");
+  syncOnlineMaze();
   updateInterface(true);
   announceCursor();
 }
@@ -1198,6 +1295,367 @@ async function copyChallengeLink(button, includeResult = false) {
   }
 }
 
+function escapeMarkup(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function readLocalSetting(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalSetting(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Lobby settings are optional; private browsing may reject persistence.
+  }
+}
+
+function showOnlineError(message = "") {
+  dom.onlineLobbyError.hidden = !message;
+  dom.onlineLobbyError.textContent = message;
+}
+
+function onlineConnectionLabel() {
+  if (onlineSession.status === "connected") return "Connected to the lobby server.";
+  if (onlineSession.status === "connecting") return "Connecting to the lobby server…";
+  if (onlineSession.status === "reconnecting") return "Connection lost. Reconnecting…";
+  if (onlineSession.status === "error") return "The lobby server could not be reached.";
+  return "Not connected.";
+}
+
+function renderOnlineLobby() {
+  const room = onlineSession.room;
+  const self = onlinePlayer();
+  const connected = onlineSession.status === "connected";
+  dom.onlineSetup.hidden = Boolean(onlineSession.connection);
+  dom.onlineRoom.hidden = !onlineSession.connection;
+  dom.onlineLobbyCode.textContent = onlineSession.roomCode ?? "———";
+  dom.onlineConnectionStatus.textContent = onlineConnectionLabel();
+  dom.onlineStatusButton.classList.toggle("connected", connected && Boolean(room));
+  dom.onlineStatusButton.textContent = room
+    ? `Lobby ${room.code}`
+    : onlineSession.status === "reconnecting"
+      ? "Lobby reconnecting"
+      : "Play online";
+  if (!room) {
+    dom.onlinePlayerList.innerHTML = "";
+    dom.readyLobbyButton.disabled = true;
+    dom.startLobbyButton.hidden = true;
+    return;
+  }
+  dom.onlinePlayerList.innerHTML = room.players
+    .map((player) => {
+      const isSelf = player.id === onlineSession.youId;
+      const isHost = player.id === room.hostId;
+      const status = room.phase === "lobby"
+        ? player.ready ? "Ready" : player.connected ? "Not ready" : "Offline"
+        : room.phase === "build"
+          ? player.submitted ? "Locked" : player.connected ? "Building" : "Offline"
+          : player.nextReady ? "Ready for next" : "Reviewing maze";
+      return `
+        <div class="lobby-player">
+          <i style="color:${escapeMarkup(player.color)}"></i>
+          <span><strong>${escapeMarkup(player.name)}${isSelf ? " (You)" : ""}</strong><small>${isHost ? "Host · " : ""}${player.connected ? "Online" : "Disconnected"}</small></span>
+          <b class="${player.ready || player.submitted || player.nextReady ? "ready" : ""}">${status}</b>
+        </div>`;
+    })
+    .join("");
+  const waiting = room.phase === "lobby";
+  dom.readyLobbyButton.hidden = !waiting;
+  dom.readyLobbyButton.disabled = !connected;
+  dom.readyLobbyButton.textContent = self?.ready ? "Cancel ready" : "Ready up";
+  const isHost = room.hostId === onlineSession.youId;
+  dom.startLobbyButton.hidden = !waiting || !isHost;
+  dom.startLobbyButton.disabled =
+    !connected ||
+    room.players.length < 2 ||
+    room.players.some((player) => !player.connected || !player.ready);
+  dom.lobbyTitle.textContent = waiting ? "The online guildhall." : `Lobby ${room.code}`;
+  dom.lobbyCopy.textContent = waiting
+    ? "Ready up when everyone has joined. The host starts the synchronized five-floor run."
+    : room.phase === "build"
+      ? `Floor ${room.floor}: builds remain hidden until everyone locks in.`
+      : `Floor ${room.floor}: every maze is now revealed.`;
+}
+
+function openOnlineLobby() {
+  if (!onlineSession.activeRun && phase !== "welcome") {
+    phaseToken += 1;
+    phase = "welcome";
+    dom.phaseBanner.textContent = "";
+    updateInterface(true);
+  }
+  if (dom.welcomeModal.classList.contains("open")) closeModal(dom.welcomeModal, false);
+  showOnlineError();
+  renderOnlineLobby();
+  openModal(
+    dom.lobbyModal,
+    onlineSession.connection ? dom.readyLobbyButton : dom.onlineNameInput,
+  );
+}
+
+function closeOnlineLobby() {
+  closeModal(dom.lobbyModal, false);
+  if (!onlineSession.activeRun && !onlineSession.connection) {
+    openModal(dom.welcomeModal, dom.startButton);
+  } else if (onlineSession.activeRun) {
+    window.requestAnimationFrame(() => dom.canvas.focus());
+  }
+}
+
+function reconnectTokenKey(serverUrl, roomCode) {
+  return `mazing-contest:lobby-token:${serverUrl}:${roomCode}`;
+}
+
+function connectToOnlineLobby({ create = false } = {}) {
+  const playerName = normalizePlayerName(dom.onlineNameInput.value);
+  const serverUrl = normalizeLobbyServerUrl(dom.onlineServerInput.value);
+  const roomCode = create ? createLobbyCode() : normalizeLobbyCode(dom.onlineCodeInput.value);
+  if (!playerName) {
+    showOnlineError("Enter a display name first.");
+    dom.onlineNameInput.focus();
+    return;
+  }
+  if (!serverUrl) {
+    showOnlineError("Enter the deployed Cloudflare Worker URL.");
+    dom.onlineServerInput.focus();
+    return;
+  }
+  if (!roomCode) {
+    showOnlineError("Enter the full six-character lobby code.");
+    dom.onlineCodeInput.focus();
+    return;
+  }
+  onlineSession.connection?.close();
+  const tokenKey = reconnectTokenKey(serverUrl, roomCode);
+  const token = readLocalSetting(tokenKey) ?? createReconnectToken();
+  writeLocalSetting(tokenKey, token);
+  writeLocalSetting("mazing-contest:online-name", playerName);
+  writeLocalSetting("mazing-contest:lobby-server", serverUrl);
+  onlineSession.serverUrl = serverUrl;
+  onlineSession.roomCode = roomCode;
+  onlineSession.token = token;
+  onlineSession.room = null;
+  onlineSession.youId = null;
+  onlineSession.activeRun = false;
+  onlineSession.startedFloor = 0;
+  onlineSession.revealedFloor = 0;
+  showOnlineError();
+  const connection = new LobbyConnection({
+    serverUrl,
+    roomCode,
+    playerName,
+    token,
+    create,
+    onStatus: (status) => {
+      onlineSession.status = status;
+      renderOnlineLobby();
+    },
+    onMessage: handleOnlineLobbyMessage,
+    onError: showOnlineError,
+    onDisconnect: () => showOnlineError("Connection interrupted; trying to reconnect."),
+  });
+  onlineSession.connection = connection;
+  dom.onlineCodeInput.value = roomCode;
+  renderOnlineLobby();
+  connection.connect();
+}
+
+function leaveOnlineLobby() {
+  window.clearTimeout(onlineSyncTimer);
+  if (onlineSession.room?.phase === "lobby") {
+    onlineSession.connection?.send("leave");
+  }
+  onlineSession.connection?.close();
+  onlineSession.connection = null;
+  onlineSession.status = "disconnected";
+  onlineSession.serverUrl = null;
+  onlineSession.roomCode = null;
+  onlineSession.token = null;
+  onlineSession.youId = null;
+  onlineSession.room = null;
+  onlineSession.activeRun = false;
+  onlineSession.startedFloor = 0;
+  onlineSession.revealedFloor = 0;
+  document.body.dataset.online = "false";
+  renderOnlineLobby();
+  closeModal(dom.lobbyModal, false);
+  prepareContest(makeSeed(), true);
+  openModal(dom.welcomeModal, dom.startButton);
+}
+
+async function copyOnlineLobbyInvite(button = dom.copyLobbyInviteButton) {
+  try {
+    const invite = createOnlineInviteUrl(window.location.href, {
+      serverUrl: onlineSession.serverUrl,
+      roomCode: onlineSession.roomCode,
+    });
+    await writeClipboard(invite);
+    const original = button.textContent;
+    button.textContent = "Invite copied";
+    window.setTimeout(() => { button.textContent = original; }, 1800);
+    showToast("Lobby invite copied. Your friends can join from any browser.", "success");
+  } catch {
+    showOnlineError("The browser blocked clipboard access.");
+  }
+}
+
+function onlineMazeSnapshot() {
+  return {
+    floor: roundNumber,
+    augmentIds: [...selectedAugments],
+    state: playerState,
+  };
+}
+
+function syncOnlineMaze(immediate = false) {
+  if (!onlineSession.activeRun || phase !== "build") return;
+  window.clearTimeout(onlineSyncTimer);
+  const send = () => onlineSession.connection?.send("maze-sync", {
+    snapshot: onlineMazeSnapshot(),
+  });
+  if (immediate) send();
+  else onlineSyncTimer = window.setTimeout(send, 140);
+}
+
+function onlineCumulativeScores(room, subtractCurrentRound = false) {
+  const scores = {};
+  for (const player of room.players) {
+    let score = player.totalScoreMs;
+    if (subtractCurrentRound && room.reveal) {
+      const revealed = room.reveal.find((entry) => entry.playerId === player.id)?.snapshot;
+      if (revealed?.state && !revealed.forfeit) score -= revealed.state.scoreMs;
+    }
+    scores[onlineScoreId(player.id)] = Math.max(0, score);
+  }
+  return scores;
+}
+
+function prepareOnlineFloor(room, { restoringReveal = false } = {}) {
+  const self = room.players.find((player) => player.id === onlineSession.youId);
+  if (!self) throw new Error("The local player is missing from the lobby.");
+  onlineSession.activeRun = true;
+  totalRounds = RUN_FLOORS;
+  if (room.floor === 1 && onlineSession.startedFloor === 0) {
+    contestSeed = room.contestSeed;
+    resetContestProgress();
+  }
+  contestSeed = room.contestSeed;
+  selectedAugments = [...self.augmentIds];
+  completedRounds = Math.max(0, room.floor - 1);
+  cumulativeScores = onlineCumulativeScores(room, restoringReveal);
+  document.body.dataset.completedRounds = String(completedRounds);
+  document.body.dataset.cumulativeScores = JSON.stringify(cumulativeScores);
+  document.body.dataset.contestSeed = contestSeed;
+  document.body.dataset.contestRounds = String(totalRounds);
+  document.body.dataset.augments = JSON.stringify(selectedAugments);
+  initRound(room.roundSeed, false, { roundNumber: room.floor });
+  const ownSnapshot = restoringReveal
+    ? room.reveal?.find((entry) => entry.playerId === onlineSession.youId)?.snapshot
+    : room.ownDraft;
+  if (ownSnapshot?.state) playerState = ownSnapshot.state;
+  buildRemainingMs = Math.max(
+    0,
+    (room.buildDeadline ?? Date.now()) - (Date.now() + onlineSession.clockOffsetMs),
+  );
+  buildDeadline = performance.now() + buildRemainingMs;
+  onlineSession.startedFloor = room.floor;
+  document.body.dataset.online = "true";
+  document.body.dataset.lobbyCode = room.code;
+  updateInterface(true);
+}
+
+function beginOnlineFloor(room) {
+  if (
+    onlineSession.startedFloor === room.floor &&
+    (phase === "build" || phase === "online-wait")
+  ) {
+    const self = onlinePlayer();
+    for (const rival of rivals) {
+      rival.submitted = room.players.find((player) => player.id === rival.id)?.submitted ?? false;
+    }
+    if (self?.submitted) phase = "online-wait";
+    leaderboardRenderKey = "";
+    updateInterface(true);
+    return;
+  }
+  for (const modal of [dom.welcomeModal, dom.lobbyModal, dom.augmentModal, dom.resultModal]) {
+    if (modal.classList.contains("open")) closeModal(modal, false);
+  }
+  prepareOnlineFloor(room);
+  onlineSession.revealedFloor = Math.min(onlineSession.revealedFloor, room.floor - 1);
+  syncOnlineMaze(true);
+  showToast(`Online floor ${room.floor} started. Opponents' builds are hidden.`, "success");
+  window.requestAnimationFrame(() => dom.canvas.focus());
+  tone("start");
+}
+
+function forfeitedOnlineState(state) {
+  return {
+    ...state,
+    scoreMs: 0,
+    routeMetrics: { ...state.routeMetrics, travelTimeMs: 0 },
+    runnerSimulation: { ...state.runnerSimulation, travelTimeMs: 0 },
+  };
+}
+
+function beginOnlineReveal(room) {
+  if (onlineSession.revealedFloor === room.floor) return;
+  if (onlineSession.startedFloor !== room.floor) prepareOnlineFloor(room, { restoringReveal: true });
+  const revealed = new Map((room.reveal ?? []).map((entry) => [entry.playerId, entry.snapshot]));
+  const own = revealed.get(onlineSession.youId);
+  if (own?.state) playerState = own.state;
+  rivals = rivals.map((rival) => {
+    const snapshot = revealed.get(rival.id);
+    return {
+      ...rival,
+      state: snapshot?.state ?? forfeitedOnlineState(rival.state),
+      submitted: true,
+      forfeited: Boolean(snapshot?.forfeit),
+    };
+  });
+  onlineSession.revealedFloor = room.floor;
+  closeModal(dom.lobbyModal, false);
+  startRunnerCountdown();
+}
+
+function handleOnlineLobbyMessage(message) {
+  if (message.type === "error") {
+    showOnlineError(message.message || "The lobby rejected that action.");
+    return;
+  }
+  if (message.type !== "snapshot" || !message.room) return;
+  onlineSession.clockOffsetMs = Number(message.serverTime) - Date.now();
+  onlineSession.youId = message.youId;
+  const previousPhase = onlineSession.room?.phase ?? null;
+  onlineSession.room = message.room;
+  renderOnlineLobby();
+  if (message.room.phase === "build") {
+    beginOnlineFloor(message.room);
+  } else if (message.room.phase === "reveal") {
+    beginOnlineReveal(message.room);
+  } else if (message.room.phase === "lobby" && previousPhase && previousPhase !== "lobby") {
+    onlineSession.activeRun = false;
+    onlineSession.startedFloor = 0;
+    onlineSession.revealedFloor = 0;
+    document.body.dataset.online = "false";
+    for (const modal of [dom.augmentModal, dom.resultModal]) {
+      if (modal.classList.contains("open")) closeModal(modal, false);
+    }
+    openOnlineLobby();
+  }
+}
+
 function formatClock(milliseconds) {
   const total = Math.max(0, Math.ceil(milliseconds / 1000));
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
@@ -1232,13 +1690,15 @@ function refundCopy(result) {
 }
 
 function allContestants() {
+  const self = onlineSession.activeRun ? onlinePlayer() : null;
   return [
     {
       id: "player",
-      name: "You",
-      color: "#efc75e",
+      name: self ? `${self.name} (You)` : "You",
+      color: self?.color ?? "#efc75e",
       state: playerState,
       isPlayer: true,
+      submitted: self?.submitted ?? false,
     },
     ...rivals,
   ];
@@ -1248,7 +1708,7 @@ function displayedContestant() {
   return resolveSpectatedContestant(
     allContestants(),
     spectatedContestantId,
-    phase === "run",
+    phase === "run" || (onlineSession.activeRun && phase === "results"),
   );
 }
 
@@ -1264,7 +1724,7 @@ function updateCanvasLabel(contestant = displayedContestant()) {
 }
 
 function selectSpectatedContestant(contestantId, announce = true) {
-  if (phase !== "run") return false;
+  if (phase !== "run" && !(onlineSession.activeRun && phase === "results")) return false;
   const contestant = allContestants().find((entry) => entry.id === contestantId);
   if (!contestant) return false;
   const changed = spectatedContestantId !== contestant.id;
@@ -1346,7 +1806,7 @@ function leaderboardMarkup() {
     .map((contestant) => {
       let detail = "Planning maze…";
       let score = "—";
-      const canSpectate = phase === "run";
+      const canSpectate = phase === "run" || (onlineSession.activeRun && phase === "results");
       const isSpectating = canSpectate && contestant.id === spectatedContestantId;
       const bankedScore = cumulativeScoreFor(contestant.id);
       if (phase === "build" && contestant.isPlayer) {
@@ -1354,6 +1814,14 @@ function leaderboardMarkup() {
         score = formatSeconds(contestant.state.scoreMs);
       } else if (phase === "build") {
         detail = `Planning maze… · ${formatSeconds(bankedScore)} banked`;
+      } else if (phase === "online-wait") {
+        detail = contestant.isPlayer || contestant.submitted
+          ? `Maze locked · ${formatSeconds(bankedScore)} banked`
+          : `Still building… · ${formatSeconds(bankedScore)} banked`;
+        score = contestant.isPlayer || contestant.submitted ? "Ready" : "Hidden";
+      } else if (phase === "online-next") {
+        detail = `Waiting for the next synchronized floor · ${formatSeconds(bankedScore)} banked`;
+        score = "Ready";
       } else if (phase === "countdown") {
         detail = `${formatDistance(routeDistance(contestant.state))} tiles · ${formatSeconds(bankedScore)} banked`;
         score = "Ready";
@@ -1384,7 +1852,9 @@ function leaderboardKey() {
     ? spectatedContestantId
     : phase === "build" || phase === "welcome"
       ? playerState.revision
-      : completedRounds;
+      : phase === "online-wait" || phase === "online-next"
+        ? JSON.stringify(onlineSession.room?.players.map((player) => [player.id, player.submitted, player.nextReady]) ?? [])
+        : completedRounds;
   return `${phase}:${roundNumber}:${stateKey}`;
 }
 
@@ -1490,6 +1960,20 @@ function updateInterface(force = false) {
     dom.phaseDescription.textContent = "Every route is fixed. No more obstacles may be placed.";
     dom.runButton.textContent = "Mazes locked";
     dom.standingNote.textContent = "Ready";
+  } else if (phase === "online-wait") {
+    const locked = onlineSession.room?.players.filter((player) => player.submitted).length ?? 1;
+    const total = onlineSession.room?.players.length ?? allContestants().length;
+    dom.phaseKicker.textContent = `Floor ${roundNumber} of ${totalRounds} · Your maze is locked`;
+    dom.phaseTitle.textContent = "Opponents' mazes remain hidden.";
+    dom.phaseDescription.textContent = `Waiting for every architect to finish. ${locked} of ${total} mazes are locked.`;
+    dom.runButton.textContent = "Waiting for lobby";
+    dom.standingNote.textContent = `${locked}/${total} locked`;
+  } else if (phase === "online-next") {
+    dom.phaseKicker.textContent = `Floor ${roundNumber} of ${totalRounds} · Ready`;
+    dom.phaseTitle.textContent = "Waiting at the next gate.";
+    dom.phaseDescription.textContent = "The next floor begins for everyone as soon as every player is ready.";
+    dom.runButton.textContent = "Waiting for lobby";
+    dom.standingNote.textContent = "Ready for next";
   } else if (phase === "run") {
     dom.phaseKicker.textContent = `Floor ${roundNumber} of ${totalRounds} · Race underway`;
     dom.phaseTitle.textContent = viewedContestant.isPlayer
@@ -1506,24 +1990,27 @@ function updateInterface(force = false) {
     dom.phaseDescription.textContent = contestIsComplete()
       ? "The highest cumulative runner time wins the run."
       : "Choose one lasting augment before descending to the next floor.";
-    dom.runButton.textContent = contestIsComplete() ? "Run complete" : "Floor complete";
+    dom.runButton.textContent = onlineSession.activeRun && phase === "results"
+      ? "View floor results"
+      : contestIsComplete() ? "Run complete" : "Floor complete";
     dom.standingNote.textContent = "Cumulative";
   }
 
-  dom.mazeOwnerHeading.textContent = phase === "run" && !viewedContestant.isPlayer
+  const canReviewMazes = phase === "run" || (onlineSession.activeRun && phase === "results");
+  dom.mazeOwnerHeading.textContent = canReviewMazes && !viewedContestant.isPlayer
     ? `${viewedContestant.name}'s maze`
     : "Your maze";
-  dom.spectateHint.hidden = phase !== "run";
-  dom.spectateFooterHint.hidden = phase !== "run";
-  for (const hint of dom.buildHints) hint.hidden = phase === "run";
-  if (phase === "run") {
+  dom.spectateHint.hidden = !canReviewMazes;
+  dom.spectateFooterHint.hidden = !canReviewMazes;
+  for (const hint of dom.buildHints) hint.hidden = phase !== "build" && phase !== "welcome";
+  if (canReviewMazes) {
     dom.mapNote.textContent = `Watching: ${viewedContestant.name}`;
   } else {
     dom.mapNote.innerHTML = 'Entrance <span aria-hidden="true">→</span> Portal';
   }
 
   const controlsLocked = phase !== "build";
-  dom.runButton.disabled = controlsLocked;
+  dom.runButton.disabled = controlsLocked && !(onlineSession.activeRun && phase === "results");
   dom.undoButton.disabled = controlsLocked || actionHistory.length === 0;
   for (const card of dom.toolCards) {
     const tool = playerTool(card.dataset.tool);
@@ -1554,8 +2041,27 @@ function updateInterface(force = false) {
   updateLeaderboard();
 }
 
-async function releaseRunners() {
+function releaseRunners() {
   if (phase !== "build") return;
+  if (!onlineSession.activeRun) {
+    startRunnerCountdown();
+    return;
+  }
+  window.clearTimeout(onlineSyncTimer);
+  const snapshot = onlineMazeSnapshot();
+  phase = "online-wait";
+  buildRemainingMs = Math.max(0, buildDeadline - performance.now());
+  hoverCell = null;
+  previewCache = null;
+  onlineSession.connection?.send("submit-maze", { snapshot });
+  dom.phaseBanner.textContent = "Maze locked · waiting for opponents";
+  leaderboardRenderKey = "";
+  updateInterface(true);
+  tone("lock");
+}
+
+async function startRunnerCountdown() {
+  if (phase !== "build" && phase !== "online-wait") return;
   phase = "countdown";
   buildRemainingMs = Math.max(0, buildDeadline - performance.now());
   hoverCell = null;
@@ -1643,6 +2149,13 @@ function finishRound() {
       : `Continue to floor ${roundNumber + 1}`;
     dom.replayRoundButton.textContent = "Replay this floor";
     dom.resultShareButton.textContent = "Copy challenge link";
+  }
+
+  dom.replayRoundButton.hidden = onlineSession.activeRun;
+  dom.reviewMazesButton.hidden = !onlineSession.activeRun;
+  if (onlineSession.activeRun) {
+    dom.resultShareButton.textContent = "Copy lobby invite";
+    if (complete) dom.nextRoundButton.textContent = "Return to lobby";
   }
 
   dom.challengeResult.hidden = !complete || challengeTargetMs === null;
@@ -2700,9 +3213,41 @@ dom.leaderboard.addEventListener("click", (event) => {
   if (!button || !dom.leaderboard.contains(button)) return;
   selectSpectatedContestant(button.dataset.spectateId);
 });
-dom.runButton.addEventListener("click", releaseRunners);
+dom.runButton.addEventListener("click", () => {
+  if (onlineSession.activeRun && phase === "results") {
+    openModal(dom.resultModal, dom.nextRoundButton);
+  } else {
+    releaseRunners();
+  }
+});
 dom.undoButton.addEventListener("click", undoLast);
+dom.openOnlineButton.addEventListener("click", openOnlineLobby);
+dom.onlineStatusButton.addEventListener("click", openOnlineLobby);
+dom.closeLobbyButton.addEventListener("click", closeOnlineLobby);
+dom.createLobbyButton.addEventListener("click", () => connectToOnlineLobby({ create: true }));
+dom.joinLobbyButton.addEventListener("click", () => connectToOnlineLobby());
+dom.onlineCodeInput.addEventListener("input", () => {
+  dom.onlineCodeInput.value = dom.onlineCodeInput.value.toUpperCase().replace(/[^A-Z2-9]/g, "");
+});
+dom.copyLobbyInviteButton.addEventListener("click", (event) => {
+  copyOnlineLobbyInvite(event.currentTarget);
+});
+dom.readyLobbyButton.addEventListener("click", () => {
+  const self = onlinePlayer();
+  if (self) onlineSession.connection?.send("ready", { ready: !self.ready });
+});
+dom.startLobbyButton.addEventListener("click", () => {
+  onlineSession.connection?.send("start", { contestSeed: makeSeed() });
+});
+dom.leaveLobbyButton.addEventListener("click", () => {
+  if (
+    onlineSession.activeRun &&
+    !window.confirm("Leave this active online run? You will forfeit if the build timer expires.")
+  ) return;
+  leaveOnlineLobby();
+});
 dom.startButton.addEventListener("click", () => {
+  if (onlineSession.connection) leaveOnlineLobby();
   totalRounds = selectedRoundCount();
   updateStartButtonLabel(totalRounds);
   document.body.dataset.contestRounds = String(totalRounds);
@@ -2712,6 +3257,14 @@ dom.startButton.addEventListener("click", () => {
 dom.nextRoundButton.addEventListener("click", () => {
   closeModal(dom.resultModal, false);
   dom.phaseBanner.textContent = "";
+  if (onlineSession.activeRun) {
+    if (!contestIsComplete() && hasAugmentDraftAfterFloor(roundNumber)) {
+      openAugmentDraft();
+    } else {
+      waitForOnlineNextFloor();
+    }
+    return;
+  }
   if (contestIsComplete()) {
     isSharedChallenge = false;
     challengeTargetMs = null;
@@ -2734,6 +3287,7 @@ dom.nextRoundButton.addEventListener("click", () => {
   }
 });
 dom.replayRoundButton.addEventListener("click", () => {
+  if (onlineSession.activeRun) return;
   const seed = roundSeed;
   const replayedRound = roundNumber;
   closeModal(dom.resultModal, false);
@@ -2753,13 +3307,21 @@ dom.roundCount.addEventListener("change", () => {
   updateStartButtonLabel(selectedRoundCount());
 });
 dom.shareChallengeButton.addEventListener("click", (event) => {
-  copyChallengeLink(event.currentTarget, contestIsComplete());
+  if (onlineSession.activeRun || onlineSession.room) copyOnlineLobbyInvite(event.currentTarget);
+  else copyChallengeLink(event.currentTarget, contestIsComplete());
 });
 dom.welcomeShareButton.addEventListener("click", (event) => {
   copyChallengeLink(event.currentTarget);
 });
 dom.resultShareButton.addEventListener("click", (event) => {
-  copyChallengeLink(event.currentTarget, contestIsComplete());
+  if (onlineSession.activeRun) copyOnlineLobbyInvite(event.currentTarget);
+  else copyChallengeLink(event.currentTarget, contestIsComplete());
+});
+dom.reviewMazesButton.addEventListener("click", () => {
+  if (!onlineSession.activeRun || phase !== "results") return;
+  closeModal(dom.resultModal, false);
+  selectSpectatedContestant(rivals[0]?.id ?? "player");
+  window.requestAnimationFrame(() => dom.canvas.focus());
 });
 dom.augmentChoices.addEventListener("click", (event) => {
   const button = event.target.closest("[data-augment]");
@@ -2831,7 +3393,7 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (
-    phase === "run" &&
+    (phase === "run" || (onlineSession.activeRun && phase === "results")) &&
     event.key >= "1" &&
     event.key <= "4" &&
     !event.ctrlKey &&
@@ -2888,6 +3450,14 @@ new ResizeObserver(() => {
 }).observe(dom.canvas);
 
 const skipIntro = query.has("skipIntro");
+const invitedLobbyCode = normalizeLobbyCode(query.get("lobby"));
+const invitedLobbyServer = normalizeLobbyServerUrl(query.get("server"));
+dom.onlineNameInput.value = readLocalSetting("mazing-contest:online-name") ?? "";
+dom.onlineServerInput.value =
+  invitedLobbyServer ??
+  readLocalSetting("mazing-contest:lobby-server") ??
+  DEFAULT_LOBBY_SERVER_URL;
+dom.onlineCodeInput.value = invitedLobbyCode ?? "";
 dom.roundCount.min = String(RUN_FLOORS);
 dom.roundCount.max = String(RUN_FLOORS);
 dom.roundCount.value = String(totalRounds);
@@ -2901,9 +3471,14 @@ if (challengeTargetMs !== null) {
 }
 document.body.dataset.sharedChallenge = String(isSharedChallenge);
 updateStartButtonLabel(totalRounds);
-if (skipIntro) dom.welcomeModal.classList.remove("open");
+if (skipIntro || (invitedLobbyCode && invitedLobbyServer)) {
+  dom.welcomeModal.classList.remove("open");
+}
 prepareContest(requestedSeed() ?? makeSeed(), !skipIntro);
-if (skipIntro) {
+renderOnlineLobby();
+if (invitedLobbyCode && invitedLobbyServer) {
+  openOnlineLobby();
+} else if (skipIntro) {
   window.requestAnimationFrame(() => dom.canvas.focus());
 } else {
   openModal(dom.welcomeModal, dom.startButton);

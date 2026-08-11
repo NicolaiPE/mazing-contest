@@ -8,6 +8,42 @@ Publish this folder on any static HTTPS host, then use **Invite friends**. The c
 
 No game server or account is required. This is an asynchronous, casual challenge: friends play independently and score targets in URLs are not cheat-proof. A `localhost` URL only works on the computer running it, so the folder must be published before that link can be sent over the internet.
 
+## Real-time online lobbies
+
+The **Play online** option adds synchronized private rooms for two to four human players. GitHub Pages continues to host the game; a small Cloudflare Worker and one Durable Object per lobby provide the WebSocket connection and shared room state.
+
+- A host creates a six-character lobby code and copies the generated invite link.
+- Everyone readies up before the host starts the five-floor run.
+- The server owns each build deadline. Maze snapshots are stored privately for reconnects and are never included in another player's build-phase messages.
+- A player may lock in early, but sees only readiness—not any opposing maze—until everyone submits or the deadline expires.
+- The server reveals every maze together. During the race and from **Review mazes** on the result screen, players can switch among all submitted mazes.
+- Augment choices and the next floor wait for the whole lobby. Floor 4 still proceeds directly to floor 5 without a draft.
+
+### Deploy the lobby server
+
+Install [Node.js](https://nodejs.org/) if needed, then from this repository run:
+
+```powershell
+cd .\online
+npm install
+npx wrangler login
+npm run deploy
+```
+
+The deployed game defaults to `https://mazing-contest-lobbies.mazingcontest.workers.dev`. Players can select **Play online** and create or join a room without configuring a server address. The editable server field is retained for local development and alternate deployments, and invite links automatically include the selected address.
+
+Before a public deployment, set `ALLOWED_ORIGINS` in `online/wrangler.jsonc` to the origins allowed to open lobby sockets, separated by commas. Use only the origin—not the repository path—for GitHub Pages:
+
+```json
+"ALLOWED_ORIGINS": "https://YOUR-NAME.github.io,http://localhost:8000"
+```
+
+Leaving it blank permits connections from any website. For local backend development, run `npm run dev` inside `online` and enter `http://localhost:8787` as the lobby server URL.
+
+The online backend uses Cloudflare's WebSocket Hibernation API so an idle lobby connection does not require the room object to remain active continuously. Durable Objects are available on Cloudflare's Free and Paid Workers plans. See the [Durable Objects overview](https://developers.cloudflare.com/durable-objects/) and [WebSocket Hibernation guide](https://developers.cloudflare.com/durable-objects/best-practices/websockets/).
+
+This remains a casual prototype: the room server validates lobby sequencing, floor identity, augment tiers, payload bounds, and score shape, but it currently trusts the browser's submitted maze state. A competitive public version should send commands and replay them through the shared game engine on the server.
+
 ## Play
 
 On Windows, right-click `serve.ps1` and choose **Run with PowerShell**, or run:
@@ -70,6 +106,10 @@ On a touch screen, tap an empty cell to place, tap one of your obstacles to remo
 - `src/contest-scoring.js` contains round-count validation, cumulative score accounting, and tie-aware contest ranking.
 - `src/challenge.js` normalizes challenge URLs, derives the complete round sequence, and validates shared score targets.
 - `src/app.js` owns the run state, canvas renderer, input, runner animation, augment flow, and interface.
+- `src/online-lobby.js` validates invite data and manages reconnecting browser WebSockets.
+- `online/src/lobby-state.js` implements the testable room state machine and hidden-build/reveal rules.
+- `online/src/worker.js` hosts each lobby in a hibernating Cloudflare Durable Object.
+- `online/wrangler.jsonc` and `online/package.json` configure local and deployed lobby servers.
 - `src/canvas-geometry.js` keeps every floor inside the framed canvas across viewport sizes and pixel densities.
 - `styles.css` contains the responsive visual system.
 - `tests/game-engine.test.mjs` covers pure rules and determinism.
