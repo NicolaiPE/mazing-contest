@@ -18,6 +18,7 @@ The **Play online** option adds synchronized private rooms for two to four human
 - A player may lock in early, but sees only readiness—not any opposing maze—until everyone submits or the deadline expires.
 - The server reveals every maze together. During the race and from **Review mazes** on the result screen, players can switch among all submitted mazes.
 - Augment choices and the next floor wait for the whole lobby. Floor 4 still proceeds directly to floor 5 without a draft.
+- Separate global solo and online leaderboards retain the ten highest completed five-floor totals, including player name, seed, score, and completion date.
 
 ### Deploy the lobby server
 
@@ -40,9 +41,9 @@ Before a public deployment, set `ALLOWED_ORIGINS` in `online/wrangler.jsonc` to 
 
 Leaving it blank permits connections from any website. For local backend development, run `npm run dev` inside `online` and enter `http://localhost:8787` as the lobby server URL.
 
-The online backend uses Cloudflare's WebSocket Hibernation API so an idle lobby connection does not require the room object to remain active continuously. Durable Objects are available on Cloudflare's Free and Paid Workers plans. See the [Durable Objects overview](https://developers.cloudflare.com/durable-objects/) and [WebSocket Hibernation guide](https://developers.cloudflare.com/durable-objects/best-practices/websockets/).
+The online backend uses Cloudflare's WebSocket Hibernation API so an idle lobby connection does not require the room object to remain active continuously. A separate singleton Durable Object stores the two top-ten leaderboards. Durable Objects are available on Cloudflare's Free and Paid Workers plans. See the [Durable Objects overview](https://developers.cloudflare.com/durable-objects/) and [WebSocket Hibernation guide](https://developers.cloudflare.com/durable-objects/best-practices/websockets/).
 
-This remains a casual prototype: the room server validates lobby sequencing, floor identity, augment tiers, payload bounds, and score shape, but it currently trusts the browser's submitted maze state. A competitive public version should send commands and replay them through the shared game engine on the server.
+This remains a casual prototype: the room server validates lobby sequencing, floor identity, augment tiers, payload bounds, and score shape, but it currently trusts the browser's submitted maze state. Solo leaderboard entries are also submitted by the browser. A competitive public version should send commands and replay them through the shared game engine on the server.
 
 ## Play
 
@@ -107,7 +108,9 @@ On a touch screen, tap an empty cell to place, tap one of your obstacles to remo
 - `src/challenge.js` normalizes challenge URLs, derives the complete round sequence, and validates shared score targets.
 - `src/app.js` owns the run state, canvas renderer, input, runner animation, augment flow, and interface.
 - `src/online-lobby.js` validates invite data and manages reconnecting browser WebSockets.
+- `src/leaderboard.js` builds leaderboard API requests for the browser.
 - `online/src/lobby-state.js` implements the testable room state machine and hidden-build/reveal rules.
+- `online/src/leaderboard-state.js` validates, ranks, deduplicates, and trims persistent scores.
 - `online/src/worker.js` hosts each lobby in a hibernating Cloudflare Durable Object.
 - `online/wrangler.jsonc` and `online/package.json` configure local and deployed lobby servers.
 - `src/canvas-geometry.js` keeps every floor inside the framed canvas across viewport sizes and pixel densities.

@@ -66,6 +66,10 @@ import {
   normalizePlayerName,
 } from "../src/online-lobby.js";
 import {
+  LEADERBOARD_MODES as CLIENT_LEADERBOARD_MODES,
+  leaderboardApiUrl,
+} from "../src/leaderboard.js";
+import {
   LOBBY_PHASES,
   connectLobbyPlayer,
   createLobbyState,
@@ -77,6 +81,59 @@ import {
   submitMaze,
   updateMazeDraft,
 } from "../online/src/lobby-state.js";
+import {
+  LEADERBOARD_LIMIT,
+  LEADERBOARD_MODES,
+  createLeaderboardState,
+  leaderboardEntries,
+  submitLeaderboardEntry,
+} from "../online/src/leaderboard-state.js";
+
+test("global leaderboard keeps separate deduplicated top tens", () => {
+  const state = createLeaderboardState();
+  for (let index = 0; index < 12; index += 1) {
+    const result = submitLeaderboardEntry(state, {
+      id: `solo-entry-${String(index).padStart(2, "0")}`,
+      mode: LEADERBOARD_MODES.SOLO,
+      playerName: ` Player ${index} `,
+      scoreMs: index * 1_000 + 0.4,
+      seed: `LEADER${index}`,
+    }, 10_000 + index);
+    assert.equal(result.inserted, true);
+  }
+  const solo = leaderboardEntries(state, LEADERBOARD_MODES.SOLO);
+  assert.equal(solo.length, LEADERBOARD_LIMIT);
+  assert.deepEqual(solo.map((entry) => entry.scoreMs), [
+    11_000, 10_000, 9_000, 8_000, 7_000, 6_000, 5_000, 4_000, 3_000, 2_000,
+  ]);
+  assert.deepEqual(solo.map((entry) => entry.rank), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  const duplicate = submitLeaderboardEntry(state, {
+    id: "solo-entry-11",
+    mode: LEADERBOARD_MODES.SOLO,
+    playerName: "Changed",
+    scoreMs: 99_000,
+    seed: "CHANGED",
+  }, 20_000);
+  assert.equal(duplicate.inserted, false);
+  assert.equal(leaderboardEntries(state, LEADERBOARD_MODES.SOLO)[0].scoreMs, 11_000);
+  submitLeaderboardEntry(state, {
+    id: "online-entry-01",
+    mode: LEADERBOARD_MODES.ONLINE,
+    playerName: "Online Player",
+    scoreMs: 12_500,
+    seed: "ONLINE1",
+  }, 30_000);
+  assert.equal(leaderboardEntries(state, LEADERBOARD_MODES.ONLINE).length, 1);
+  assert.equal(leaderboardEntries(state, LEADERBOARD_MODES.SOLO).length, 10);
+});
+
+test("leaderboard client URLs preserve deployed server paths", () => {
+  assert.equal(CLIENT_LEADERBOARD_MODES.SOLO, LEADERBOARD_MODES.SOLO);
+  assert.equal(
+    leaderboardApiUrl("https://rooms.example.workers.dev/service/", CLIENT_LEADERBOARD_MODES.ONLINE),
+    "https://rooms.example.workers.dev/service/leaderboard?mode=online",
+  );
+});
 
 test("online lobby transfers host ownership when someone leaves before a run", () => {
   const room = createLobbyState({

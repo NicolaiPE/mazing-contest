@@ -8,6 +8,10 @@
       {
         "name": "LOBBIES",
         "class_name": "Lobby"
+      },
+      {
+        "name": "LEADERBOARD",
+        "class_name": "Leaderboard"
       }
     ]
   },
@@ -15,6 +19,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["Lobby"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["Leaderboard"]
     }
   ],
   "vars": {

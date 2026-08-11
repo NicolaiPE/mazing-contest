@@ -105,6 +105,8 @@ export function createLobbyState({ code, hostToken, hostName, hostId, now = Date
     phase: LOBBY_PHASES.LOBBY,
     hostId,
     contestSeed: null,
+    runStartedAt: null,
+    leaderboardPublishedAt: null,
     floor: 0,
     buildDeadline: null,
     revealAt: null,
@@ -123,6 +125,7 @@ function createPlayer({ id, token, name, index, now }) {
     ready: false,
     augmentIds: [],
     totalScoreMs: 0,
+    leaderboardEligible: true,
     draft: null,
     submission: null,
     nextReady: false,
@@ -205,9 +208,12 @@ export function startLobbyRun(
   }
   room.contestSeed = normalizeChallengeSeed(contestSeed);
   if (!room.contestSeed) throw new RangeError("A contest seed is required.");
+  room.runStartedAt = now;
+  room.leaderboardPublishedAt = null;
   for (const player of room.players) {
     player.augmentIds = [];
     player.totalScoreMs = 0;
+    player.leaderboardEligible = true;
   }
   return startFloor(room, 1, now);
 }
@@ -228,7 +234,9 @@ function revealIfReady(room, now) {
   room.revealAt = now;
   room.updatedAt = now;
   for (const player of room.players) {
-    if (!player.submission.forfeit) {
+    if (player.submission.forfeit) {
+      player.leaderboardEligible = false;
+    } else {
       player.totalScoreMs += player.submission.state.scoreMs;
     }
   }
@@ -279,6 +287,8 @@ function validateNextAugments(room, player, value) {
 function resetToLobby(room, now) {
   room.phase = LOBBY_PHASES.LOBBY;
   room.contestSeed = null;
+  room.runStartedAt = null;
+  room.leaderboardPublishedAt = null;
   room.floor = 0;
   room.buildDeadline = null;
   room.revealAt = null;
@@ -287,6 +297,7 @@ function resetToLobby(room, now) {
     player.ready = false;
     player.augmentIds = [];
     player.totalScoreMs = 0;
+    player.leaderboardEligible = true;
     player.draft = null;
     player.submission = null;
     player.nextReady = false;

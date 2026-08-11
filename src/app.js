@@ -50,6 +50,12 @@ import {
   normalizeLobbyServerUrl,
   normalizePlayerName,
 } from "./online-lobby.js";
+import {
+  LEADERBOARD_MODES,
+  createLeaderboardEntryId,
+  fetchLeaderboard,
+  submitSoloLeaderboardEntry,
+} from "./leaderboard.js";
 
 const ROCK_DENSITY = 0.115;
 const MIN_STARTING_GOLD = 80;
@@ -209,7 +215,9 @@ const dom = {
   shareChallengeButton: document.querySelector("#shareChallengeButton"),
   welcomeShareButton: document.querySelector("#welcomeShareButton"),
   resultShareButton: document.querySelector("#resultShareButton"),
+  resultLeaderboardButton: document.querySelector("#resultLeaderboardButton"),
   reviewMazesButton: document.querySelector("#reviewMazesButton"),
+  leaderboardSubmissionStatus: document.querySelector("#leaderboardSubmissionStatus"),
   challengeTarget: document.querySelector("#challengeTarget"),
   roundCountHelp: document.querySelector("#roundCountHelp"),
   augmentEyebrow: document.querySelector("#augmentEyebrow"),
@@ -218,7 +226,10 @@ const dom = {
   augmentChoices: document.querySelector("#augmentChoices"),
   augmentOwned: document.querySelector("#augmentOwned"),
   onlineStatusButton: document.querySelector("#onlineStatusButton"),
+  globalLeaderboardButton: document.querySelector("#globalLeaderboardButton"),
   openOnlineButton: document.querySelector("#openOnlineButton"),
+  welcomeLeaderboardButton: document.querySelector("#welcomeLeaderboardButton"),
+  playerNameInput: document.querySelector("#playerNameInput"),
   lobbyModal: document.querySelector("#lobbyModal"),
   lobbyTitle: document.querySelector("#lobbyTitle"),
   lobbyCopy: document.querySelector("#lobbyCopy"),
@@ -238,6 +249,11 @@ const dom = {
   startLobbyButton: document.querySelector("#startLobbyButton"),
   leaveLobbyButton: document.querySelector("#leaveLobbyButton"),
   onlineLobbyError: document.querySelector("#onlineLobbyError"),
+  leaderboardModal: document.querySelector("#leaderboardModal"),
+  closeLeaderboardButton: document.querySelector("#closeLeaderboardButton"),
+  globalLeaderboardList: document.querySelector("#globalLeaderboardList"),
+  globalLeaderboardStatus: document.querySelector("#globalLeaderboardStatus"),
+  leaderboardTabs: [...document.querySelectorAll("[data-leaderboard-mode]")],
 };
 
 const context = dom.canvas.getContext("2d");
@@ -288,6 +304,16 @@ let pointerGesture = null;
 let canvasNeedsResize = true;
 let lastCanvasDraw = 0;
 let onlineSyncTimer = 0;
+let leaderboardRunId = "";
+let soloLeaderboardSubmitted = false;
+let leaderboardReturnModal = null;
+let leaderboardLoadToken = 0;
+const globalLeaderboardState = {
+  mode: LEADERBOARD_MODES.SOLO,
+  entries: [],
+  loading: false,
+  error: "",
+};
 const onlineSession = {
   connection: null,
   status: "disconnected",
@@ -389,6 +415,8 @@ function resetContestProgress() {
   currentFloor = floorConfig(1);
   selectedAugments = [];
   pendingAugmentChoices = [];
+  leaderboardRunId = createLeaderboardEntryId();
+  soloLeaderboardSubmitted = false;
   cumulativeScores = createCumulativeScores(scoreContestantsForCurrentMode());
   roundStartCompletedRounds = 0;
   roundStartCumulativeScores = { ...cumulativeScores };
@@ -1320,6 +1348,112 @@ function writeLocalSetting(key, value) {
   }
 }
 
+function leaderboardDate(playedAt) {
+  const date = new Date(Number(playedAt));
+  if (Number.isNaN(date.getTime())) return "Unknown date";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function renderGlobalLeaderboard() {
+  for (const tab of dom.leaderboardTabs) {
+    tab.setAttribute("aria-selected", String(tab.dataset.leaderboardMode === globalLeaderboardState.mode));
+  }
+  if (globalLeaderboardState.loading) {
+    dom.globalLeaderboardList.innerHTML = '<div class="global-leaderboard-empty">Consulting the guild recordsâ€¦</div>';
+    dom.globalLeaderboardStatus.textContent = "Loading leaderboardâ€¦";
+    return;
+  }
+  dom.globalLeaderboardList.innerHTML = globalLeaderboardState.entries.length > 0
+    ? globalLeaderboardState.entries.map((entry) => `
+        <div class="global-leaderboard-row">
+          <b>${Number(entry.rank)}</b>
+          <span>
+            <strong>${escapeMarkup(entry.playerName)}</strong>
+            <small>Seed ${escapeMarkup(entry.seed)} Â· ${escapeMarkup(leaderboardDate(entry.playedAt))}</small>
+          </span>
+          <strong>${formatSeconds(Number(entry.scoreMs))}</strong>
+        </div>`).join("")
+    : '<div class="global-leaderboard-empty">No completed runs have been recorded yet.</div>';
+  dom.globalLeaderboardStatus.textContent = globalLeaderboardState.error ||
+    `${globalLeaderboardState.mode === LEADERBOARD_MODES.SOLO ? "Solo" : "Online"} Â· top ${globalLeaderboardState.entries.length || 0} of 10`;
+}
+
+async function loadGlobalLeaderboard(mode = globalLeaderboardState.mode) {
+  const token = ++leaderboardLoadToken;
+  globalLeaderboardState.mode = mode;
+  globalLeaderboardState.entries = [];
+  globalLeaderboardState.loading = true;
+  globalLeaderboardState.error = "";
+  renderGlobalLeaderboard();
+  try {
+    const entries = await fetchLeaderboard(DEFAULT_LOBBY_SERVER_URL, mode);
+    if (token !== leaderboardLoadToken) return;
+    globalLeaderboardState.entries = entries;
+  } catch (error) {
+    if (token !== leaderboardLoadToken) return;
+    globalLeaderboardState.error = error instanceof Error
+      ? error.message
+      : "The leaderboard could not be loaded.";
+  } finally {
+    if (token === leaderboardLoadToken) {
+      globalLeaderboardState.loading = false;
+      renderGlobalLeaderboard();
+    }
+  }
+}
+
+function preferredFocusForModal(modal) {
+  if (modal === dom.welcomeModal) return dom.startButton;
+  if (modal === dom.resultModal) return dom.nextRoundButton;
+  if (modal === dom.lobbyModal) return dom.readyLobbyButton;
+  return null;
+}
+
+function openGlobalLeaderboard() {
+  const current = openDialog();
+  leaderboardReturnModal = current && current !== dom.leaderboardModal ? current : null;
+  if (leaderboardReturnModal) closeModal(leaderboardReturnModal, false);
+  openModal(dom.leaderboardModal, dom.leaderboardTabs.find((tab) =>
+    tab.dataset.leaderboardMode === globalLeaderboardState.mode));
+  loadGlobalLeaderboard();
+}
+
+function closeGlobalLeaderboard() {
+  closeModal(dom.leaderboardModal, false);
+  const returnModal = leaderboardReturnModal;
+  leaderboardReturnModal = null;
+  if (returnModal) openModal(returnModal, preferredFocusForModal(returnModal));
+  else window.requestAnimationFrame(() => dom.canvas.focus());
+}
+
+async function recordSoloLeaderboardScore(scoreMs) {
+  if (soloLeaderboardSubmitted) return;
+  const playerName = normalizePlayerName(dom.playerNameInput.value);
+  if (!playerName) return;
+  soloLeaderboardSubmitted = true;
+  dom.leaderboardSubmissionStatus.hidden = false;
+  dom.leaderboardSubmissionStatus.textContent = "Recording your solo scoreâ€¦";
+  try {
+    const result = await submitSoloLeaderboardEntry(DEFAULT_LOBBY_SERVER_URL, {
+      id: leaderboardRunId,
+      playerName,
+      scoreMs,
+      seed: contestSeed,
+    });
+    const placed = result.entries?.some((entry) => entry.id === leaderboardRunId);
+    dom.leaderboardSubmissionStatus.textContent = placed
+      ? "Your score has been recorded on the solo leaderboard."
+      : "Your score was recorded but did not enter the current top ten.";
+  } catch {
+    soloLeaderboardSubmitted = false;
+    dom.leaderboardSubmissionStatus.textContent =
+      "The leaderboard could not record this score. Finishing the floor again will retry.";
+  }
+}
+
 function showOnlineError(message = "") {
   dom.onlineLobbyError.hidden = !message;
   dom.onlineLobbyError.textContent = message;
@@ -1441,7 +1575,9 @@ function connectToOnlineLobby({ create = false } = {}) {
   const token = readLocalSetting(tokenKey) ?? createReconnectToken();
   writeLocalSetting(tokenKey, token);
   writeLocalSetting("mazing-contest:online-name", playerName);
+  writeLocalSetting("mazing-contest:player-name", playerName);
   writeLocalSetting("mazing-contest:lobby-server", serverUrl);
+  dom.playerNameInput.value = playerName;
   onlineSession.serverUrl = serverUrl;
   onlineSession.roomCode = roomCode;
   onlineSession.token = token;
@@ -1589,7 +1725,7 @@ function beginOnlineFloor(room) {
     updateInterface(true);
     return;
   }
-  for (const modal of [dom.welcomeModal, dom.lobbyModal, dom.augmentModal, dom.resultModal]) {
+  for (const modal of [dom.welcomeModal, dom.lobbyModal, dom.leaderboardModal, dom.augmentModal, dom.resultModal]) {
     if (modal.classList.contains("open")) closeModal(modal, false);
   }
   prepareOnlineFloor(room);
@@ -1649,7 +1785,7 @@ function handleOnlineLobbyMessage(message) {
     onlineSession.startedFloor = 0;
     onlineSession.revealedFloor = 0;
     document.body.dataset.online = "false";
-    for (const modal of [dom.augmentModal, dom.resultModal]) {
+    for (const modal of [dom.leaderboardModal, dom.augmentModal, dom.resultModal]) {
       if (modal.classList.contains("open")) closeModal(modal, false);
     }
     openOnlineLobby();
@@ -2153,9 +2289,16 @@ function finishRound() {
 
   dom.replayRoundButton.hidden = onlineSession.activeRun;
   dom.reviewMazesButton.hidden = !onlineSession.activeRun;
+  dom.leaderboardSubmissionStatus.hidden = !complete;
   if (onlineSession.activeRun) {
     dom.resultShareButton.textContent = "Copy lobby invite";
     if (complete) dom.nextRoundButton.textContent = "Return to lobby";
+    if (complete) {
+      dom.leaderboardSubmissionStatus.textContent =
+        "Completed online scores are recorded automatically by the lobby server.";
+    }
+  } else if (complete) {
+    void recordSoloLeaderboardScore(playerCumulativeResult.totalScoreMs);
   }
 
   dom.challengeResult.hidden = !complete || challengeTargetMs === null;
@@ -3223,11 +3366,25 @@ dom.runButton.addEventListener("click", () => {
 dom.undoButton.addEventListener("click", undoLast);
 dom.openOnlineButton.addEventListener("click", openOnlineLobby);
 dom.onlineStatusButton.addEventListener("click", openOnlineLobby);
+dom.globalLeaderboardButton.addEventListener("click", openGlobalLeaderboard);
+dom.welcomeLeaderboardButton.addEventListener("click", openGlobalLeaderboard);
+dom.resultLeaderboardButton.addEventListener("click", openGlobalLeaderboard);
+dom.closeLeaderboardButton.addEventListener("click", closeGlobalLeaderboard);
+for (const tab of dom.leaderboardTabs) {
+  tab.addEventListener("click", () => loadGlobalLeaderboard(tab.dataset.leaderboardMode));
+}
 dom.closeLobbyButton.addEventListener("click", closeOnlineLobby);
 dom.createLobbyButton.addEventListener("click", () => connectToOnlineLobby({ create: true }));
 dom.joinLobbyButton.addEventListener("click", () => connectToOnlineLobby());
 dom.onlineCodeInput.addEventListener("input", () => {
   dom.onlineCodeInput.value = dom.onlineCodeInput.value.toUpperCase().replace(/[^A-Z2-9]/g, "");
+});
+dom.playerNameInput.addEventListener("input", () => {
+  dom.playerNameInput.setCustomValidity("");
+  if (!onlineSession.connection) dom.onlineNameInput.value = dom.playerNameInput.value;
+});
+dom.onlineNameInput.addEventListener("input", () => {
+  if (!onlineSession.connection) dom.playerNameInput.value = dom.onlineNameInput.value;
 });
 dom.copyLobbyInviteButton.addEventListener("click", (event) => {
   copyOnlineLobbyInvite(event.currentTarget);
@@ -3247,6 +3404,18 @@ dom.leaveLobbyButton.addEventListener("click", () => {
   leaveOnlineLobby();
 });
 dom.startButton.addEventListener("click", () => {
+  const playerName = normalizePlayerName(dom.playerNameInput.value);
+  if (!playerName) {
+    dom.playerNameInput.setCustomValidity("Enter a display name for the solo leaderboard.");
+    dom.playerNameInput.reportValidity();
+    dom.playerNameInput.focus();
+    return;
+  }
+  dom.playerNameInput.setCustomValidity("");
+  dom.playerNameInput.value = playerName;
+  dom.onlineNameInput.value = playerName;
+  writeLocalSetting("mazing-contest:player-name", playerName);
+  writeLocalSetting("mazing-contest:online-name", playerName);
   if (onlineSession.connection) leaveOnlineLobby();
   totalRounds = selectedRoundCount();
   updateStartButtonLabel(totalRounds);
@@ -3452,7 +3621,10 @@ new ResizeObserver(() => {
 const skipIntro = query.has("skipIntro");
 const invitedLobbyCode = normalizeLobbyCode(query.get("lobby"));
 const invitedLobbyServer = normalizeLobbyServerUrl(query.get("server"));
-dom.onlineNameInput.value = readLocalSetting("mazing-contest:online-name") ?? "";
+const savedPlayerName = readLocalSetting("mazing-contest:player-name") ??
+  readLocalSetting("mazing-contest:online-name") ?? "";
+dom.playerNameInput.value = savedPlayerName;
+dom.onlineNameInput.value = savedPlayerName;
 dom.onlineServerInput.value =
   invitedLobbyServer ??
   readLocalSetting("mazing-contest:lobby-server") ??

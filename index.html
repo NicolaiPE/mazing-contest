@@ -22,6 +22,9 @@
         </div>
 
         <div class="topbar-actions">
+          <button class="secondary-button" id="globalLeaderboardButton" type="button">
+            Leaderboards
+          </button>
           <button class="secondary-button online-status-button" id="onlineStatusButton" type="button">
             Play online
           </button>
@@ -313,6 +316,11 @@
           In 20% of floors, Endless Feast becomes a mandatory checkpoint before the portal.
         </p>
         <p class="challenge-target" id="challengeTarget" hidden></p>
+        <label class="lobby-field player-name-field" for="playerNameInput">
+          <span>Display name</span>
+          <input id="playerNameInput" type="text" maxlength="24" autocomplete="nickname" placeholder="Maze architect" required />
+          <small>Used for solo leaderboard entries and prefilled when you play online.</small>
+        </label>
         <div class="round-count-picker">
           <label for="roundCountInput">Run depth</label>
           <div class="round-count-input">
@@ -339,6 +347,7 @@
         <div class="welcome-actions">
           <button class="primary-button large" id="startButton" type="button">Play solo</button>
           <button class="primary-button large online-button" id="openOnlineButton" type="button">Play online</button>
+          <button class="secondary-button large" id="welcomeLeaderboardButton" type="button">Leaderboards</button>
           <button class="secondary-button large" id="welcomeShareButton" type="button">Copy challenge link</button>
         </div>
         <small>No installation · Friends receive the same full contest</small>
@@ -392,6 +401,22 @@
       </div>
     </div>
 
+    <div class="modal-backdrop" id="leaderboardModal" role="dialog" aria-modal="true" aria-labelledby="globalLeaderboardTitle">
+      <div class="modal-card leaderboard-card">
+        <button class="modal-close-button" id="closeLeaderboardButton" type="button" aria-label="Close leaderboards">×</button>
+        <div class="modal-crest leaderboard-crest" aria-hidden="true"><span>♛</span></div>
+        <span class="eyebrow">Hall of impossible paths</span>
+        <h2 id="globalLeaderboardTitle">Global leaderboards</h2>
+        <p>The ten highest cumulative times across completed five-floor runs.</p>
+        <div class="leaderboard-tabs" role="tablist" aria-label="Leaderboard mode">
+          <button type="button" id="soloLeaderboardTab" data-leaderboard-mode="solo" role="tab" aria-selected="true">Solo</button>
+          <button type="button" id="onlineLeaderboardTab" data-leaderboard-mode="online" role="tab" aria-selected="false">Online</button>
+        </div>
+        <div class="global-leaderboard-list" id="globalLeaderboardList" aria-live="polite"></div>
+        <p class="global-leaderboard-status" id="globalLeaderboardStatus" role="status"></p>
+      </div>
+    </div>
+
     <div class="modal-backdrop" id="augmentModal" role="dialog" aria-modal="true" aria-labelledby="augmentTitle">
       <div class="modal-card augment-card">
         <div class="augment-emblem" aria-hidden="true">✦</div>
@@ -409,10 +434,12 @@
         <span class="eyebrow" id="resultEyebrow">Floor complete</span>
         <h2 id="resultTitle">The maze has spoken.</h2>
         <p id="resultCopy"></p>
+        <p class="leaderboard-submission-status" id="leaderboardSubmissionStatus" hidden></p>
         <p class="challenge-result" id="challengeResult" hidden></p>
         <div class="result-board" id="resultBoard"></div>
         <div class="result-actions">
           <button class="secondary-button large" id="resultShareButton" type="button">Copy challenge link</button>
+          <button class="secondary-button large" id="resultLeaderboardButton" type="button">Leaderboards</button>
           <button class="secondary-button large" id="reviewMazesButton" type="button" hidden>Review mazes</button>
           <button class="secondary-button large" id="replayRoundButton" type="button">Replay this floor</button>
           <button class="primary-button large" id="nextRoundButton" type="button">Choose an augment</button>

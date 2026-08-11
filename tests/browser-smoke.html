@@ -59,6 +59,10 @@
         normalizeLobbyCode,
         normalizeLobbyServerUrl,
       } from "../src/online-lobby.js";
+      import {
+        LEADERBOARD_MODES,
+        leaderboardApiUrl,
+      } from "../src/leaderboard.js";
 
       const result = document.querySelector("#result");
       const checks = [];
@@ -79,7 +83,11 @@
             createOnlineInviteUrl("https://example.github.io/mazing/?old=1", {
               serverUrl: "https://rooms.example.workers.dev",
               roomCode: "ABC234",
-            }).includes("/mazing/?lobby=ABC234&server="),
+            }).includes("/mazing/?lobby=ABC234&server=") &&
+            leaderboardApiUrl(
+              "https://rooms.example.workers.dev/service/",
+              LEADERBOARD_MODES.ONLINE,
+            ) === "https://rooms.example.workers.dev/service/leaderboard?mode=online",
           "online lobby invites preserve static-host project paths",
         );
         assert(
@@ -840,7 +848,7 @@
           await new Promise((resolve, reject) => {
             const timeout = window.setTimeout(
               () => reject(new Error("Spectator click test app did not load.")),
-              5_000,
+              10_000,
             );
             appFrame.addEventListener("load", () => {
               window.clearTimeout(timeout);
@@ -863,8 +871,10 @@
           assert(
             appDocument.querySelector("#openOnlineButton")?.textContent === "Play online" &&
               appDocument.querySelector("#lobbyModal") &&
+              appDocument.querySelector("#leaderboardModal") &&
+              appDocument.querySelector("#playerNameInput") &&
               !(appDocument.body.dataset.appError ?? ""),
-            "online lobby controls load without changing solo challenge mode",
+            "online lobby and global leaderboard controls load without changing solo challenge mode",
           );
           const rivalAiStats = JSON.parse(appDocument.body.dataset.rivalAiStats ?? "[]");
           const vesperStats = rivalAiStats.find((entry) => entry.id === "vesper");

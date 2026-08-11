@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { RUN_FLOORS } from "../../src/roguelike.js";
 import {
   LOBBY_PHASES,
   connectLobbyPlayer,
@@ -12,10 +13,17 @@ import {
   submitMaze,
   updateMazeDraft,
 } from "./lobby-state.js";
+import {
+  LEADERBOARD_MODES,
+  createLeaderboardState,
+  leaderboardEntries,
+  submitLeaderboardEntry,
+} from "./leaderboard-state.js";
 
 const ROOM_CODE_PATTERN = /^[A-Z2-9]{6}$/;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,128}$/;
 const MAX_MESSAGE_BYTES = 240_000;
+const MAX_LEADERBOARD_REQUEST_BYTES = 4_000;
 
 function jsonResponse(value, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(value), {
@@ -39,12 +47,63 @@ function allowedOrigin(request, env) {
   return configured.includes(request.headers.get("Origin"));
 }
 
+function corsHeaders(request) {
+  return {
+    "Access-Control-Allow-Origin": request.headers.get("Origin"),
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
+  };
+}
+
+function addCors(response, request) {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(corsHeaders(request))) headers.set(name, value);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+async function handleLeaderboardRequest(request, env) {
+  if (!allowedOrigin(request, env)) {
+    return jsonResponse({ error: "Origin is not allowed." }, 403);
+  }
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(request) });
+  }
+  const stub = env.LEADERBOARD.getByName("global");
+  let internalRequest;
+  if (request.method === "GET") {
+    const mode = new URL(request.url).searchParams.get("mode") ?? LEADERBOARD_MODES.SOLO;
+    internalRequest = new Request(`https://leaderboard.internal/?mode=${encodeURIComponent(mode)}`);
+  } else if (request.method === "POST") {
+    const serialized = await request.text();
+    if (serialized.length > MAX_LEADERBOARD_REQUEST_BYTES) {
+      return addCors(jsonResponse({ error: "Leaderboard entry is too large." }, 413), request);
+    }
+    let entry;
+    try {
+      entry = JSON.parse(serialized);
+    } catch {
+      return addCors(jsonResponse({ error: "Leaderboard entry must be valid JSON." }, 400), request);
+    }
+    internalRequest = new Request("https://leaderboard.internal/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...entry, mode: LEADERBOARD_MODES.SOLO }),
+    });
+  } else {
+    return addCors(jsonResponse({ error: "Method not allowed." }, 405, { Allow: "GET, POST, OPTIONS" }), request);
+  }
+  return addCors(await stub.fetch(internalRequest), request);
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
       return jsonResponse({ ok: true, service: "mazing-contest-lobbies" });
     }
+    if (url.pathname === "/leaderboard") return handleLeaderboardRequest(request, env);
     const match = url.pathname.match(/^\/lobbies\/([A-Z2-9]{6})$/);
     if (!match) return jsonResponse({ error: "Not found." }, 404);
     if (!allowedOrigin(request, env)) return jsonResponse({ error: "Origin is not allowed." }, 403);
@@ -59,6 +118,7 @@ export default {
 export class Lobby extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
+    this.env = env;
     this.room = null;
     this.ctx.blockConcurrencyWhile(async () => {
       this.room = await this.ctx.storage.get("room") ?? null;
@@ -77,6 +137,42 @@ export class Lobby extends DurableObject {
   async save() {
     if (this.room) await this.ctx.storage.put("room", this.room);
     else await this.ctx.storage.delete("room");
+  }
+
+  async publishOnlineLeaderboardIfComplete() {
+    if (
+      !this.room ||
+      this.room.phase !== LOBBY_PHASES.REVEAL ||
+      this.room.floor !== RUN_FLOORS ||
+      this.room.leaderboardPublishedAt
+    ) return false;
+    const playedAt = this.room.revealAt ?? Date.now();
+    const entries = this.room.players
+      .filter((player) => player.leaderboardEligible)
+      .map((player) => ({
+        id: `online:${this.room.code}:${this.room.runStartedAt}:${player.id}`,
+        mode: LEADERBOARD_MODES.ONLINE,
+        playerName: player.name,
+        scoreMs: player.totalScoreMs,
+        seed: this.room.contestSeed,
+      }));
+    try {
+      const stub = this.env.LEADERBOARD.getByName("global");
+      const responses = await Promise.all(entries.map((entry) => stub.fetch(new Request(
+        "https://leaderboard.internal/",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(entry),
+        },
+      ))));
+      if (responses.some((response) => !response.ok)) throw new Error("Leaderboard rejected an online score.");
+      this.room.leaderboardPublishedAt = playedAt;
+      return true;
+    } catch (error) {
+      console.error("Could not publish online leaderboard scores.", error);
+      return false;
+    }
   }
 
   send(socket, value) {
@@ -178,8 +274,10 @@ export class Lobby extends DurableObject {
         this.send(socket, { type: "maze-synced", revision: input.snapshot?.state?.revision ?? 0 });
         return;
       } else if (input.type === "submit-maze") {
-        submitMaze(this.room, playerId, input.snapshot);
+        const revealed = submitMaze(this.room, playerId, input.snapshot);
+        if (revealed) await this.publishOnlineLeaderboardIfComplete();
       } else if (input.type === "next-ready") {
+        await this.publishOnlineLeaderboardIfComplete();
         const result = markPlayerReadyForNextFloor(this.room, playerId, input.augmentIds ?? []);
         if (result.deadline) await this.ctx.storage.setAlarm(result.deadline);
       } else if (input.type === "leave") {
@@ -214,8 +312,37 @@ export class Lobby extends DurableObject {
 
   async alarm() {
     if (!this.room || this.room.phase !== LOBBY_PHASES.BUILD) return;
-    expireLobbyBuild(this.room);
+    const revealed = expireLobbyBuild(this.room);
+    if (revealed) await this.publishOnlineLeaderboardIfComplete();
     await this.save();
     this.broadcastSnapshots();
+  }
+}
+
+export class Leaderboard extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.state = createLeaderboardState();
+    this.ctx.blockConcurrencyWhile(async () => {
+      this.state = await this.ctx.storage.get("leaderboard") ?? createLeaderboardState();
+    });
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    try {
+      if (request.method === "GET") {
+        const mode = url.searchParams.get("mode") ?? LEADERBOARD_MODES.SOLO;
+        return jsonResponse({ mode, entries: leaderboardEntries(this.state, mode) });
+      }
+      if (request.method === "POST") {
+        const result = submitLeaderboardEntry(this.state, await request.json());
+        if (result.inserted) await this.ctx.storage.put("leaderboard", this.state);
+        return jsonResponse(result, result.inserted ? 201 : 200);
+      }
+      return jsonResponse({ error: "Method not allowed." }, 405, { Allow: "GET, POST" });
+    } catch (error) {
+      return jsonResponse({ error: error instanceof Error ? error.message : String(error) }, 400);
+    }
   }
 }
