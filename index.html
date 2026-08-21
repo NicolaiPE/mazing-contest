@@ -197,14 +197,14 @@
               <span class="portal-note-icon" aria-hidden="true"></span>
               <span>
                 <strong>Linked portal</strong>
-                <small>25% chance · ends stay 3+ squares apart · each pair deactivates after one use</small>
+                <small>25% chance · clear of edges and black squares · ends stay 3+ squares apart · one use</small>
               </span>
             </div>
             <div class="neutral-tower-note trap-note" role="note" aria-label="Trap Door field event">
               <span class="trap-note-icon" aria-hidden="true">▦</span>
               <span>
                 <strong>Trap Door</strong>
-                <small>Same 0/1/2 rates as slow towers · launches up to 3 squares forward · one use</small>
+                <small>Same 0/1/2 rates as slow towers · clear of edges and black squares · launches up to 3 squares · one use</small>
               </span>
             </div>
             <div class="neutral-tower-note feast-note" role="note" aria-label="Endless Feast checkpoint event">
@@ -283,12 +283,14 @@
                 </li>
                 <li>
                   <b>Linked portal:</b> has a 25% chance to place two linked ends at least three squares apart.
+                  Both ends have a playable-tile buffer from map edges and black squares.
                   The runner never seeks one, but entering an end moves it to its partner before rerouting normally.
                   Each pair deactivates independently after one use.
                 </li>
                 <li>
                   <b>Trap Door:</b> uses the slow-tower spawn rates. The runner never seeks one, but crossing it
-                  launches up to three squares forward, stopping at the last valid edge square, then deactivates.
+                  launches up to three squares forward, stopping at the last valid square before a boundary,
+                  then deactivates. It always spawns with a playable-tile buffer from map edges and black squares.
                 </li>
                 <li>
                   <b>Endless Feast:</b> appears in 20% of floors. Every runner must reach the protected

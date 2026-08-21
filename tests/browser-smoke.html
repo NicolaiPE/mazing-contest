@@ -312,6 +312,8 @@
           rockDensity: 0.15,
           slowTowerCount: 1,
           speedTowerCount: 1,
+          portalCount: 0,
+          trapDoorCount: 0,
           endlessFeastCount: 1,
         });
         const feastState = createGameState({ baseMap: feastMap, startingGold: 100 });
@@ -552,6 +554,38 @@
           trapDoorCount: 0,
           portalCount: 2,
         });
+        const bufferedEffectsMap = generateBaseMap({
+          seed: "browser-buffered-floor-effects",
+          width: 26,
+          height: 21,
+          mapShape: MAP_SHAPES.DONUT,
+          rockDensity: 0,
+          slowTowerCount: 0,
+          speedTowerCount: 0,
+          portalCount: 2,
+          trapDoorCount: 5,
+          endlessFeastCount: 0,
+        });
+        const bufferedVoidKeys = new Set(
+          bufferedEffectsMap.voidCells.map(({ x, y }) => `${x},${y}`),
+        );
+        const floorEffectsHavePlayableBuffers = [
+          ...bufferedEffectsMap.portalPair,
+          ...bufferedEffectsMap.baseTrapDoors,
+        ].every((cell) => {
+          for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
+            for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+              const x = cell.x + xOffset;
+              const y = cell.y + yOffset;
+              if (
+                x < 0 || y < 0 ||
+                x >= bufferedEffectsMap.width || y >= bufferedEffectsMap.height ||
+                bufferedVoidKeys.has(`${x},${y}`)
+              ) return false;
+            }
+          }
+          return true;
+        });
         const portalsAreSeparated = twoPairMap.portalPair.every((portal, index, portals) =>
           portals.slice(0, index).every((other) =>
             Math.max(Math.abs(portal.x - other.x), Math.abs(portal.y - other.y)) >=
@@ -577,9 +611,12 @@
         assert(
           twoPairMap.portalPair.length === 4 &&
             portalsAreSeparated &&
+            bufferedEffectsMap.portalPair.length === 4 &&
+            bufferedEffectsMap.baseTrapDoors.length === 5 &&
+            floorEffectsHavePlayableBuffers &&
             twoPairState.runnerSimulation.portalApplications.length === 2 &&
             twoPairState.scoreMs === 8_000,
-          "multiple portal pairs stay three squares apart and deactivate independently",
+          "floor effects stay buffered from edges and voids while portal pairs deactivate independently",
         );
         const trapDoorState = createGameState({
           baseMap: {

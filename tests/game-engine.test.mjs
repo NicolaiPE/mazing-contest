@@ -874,6 +874,55 @@ test("linked portals spawn at 25%, teleport once, and remain protected", () => {
   assert.equal(protectedPlacement.reason, PLACEMENT_FAILURES.PROTECTED_CELL);
 });
 
+test("generated portals and trap doors never border edges or void cells", () => {
+  const assertPlayableBuffer = (map, cell, kind) => {
+    const voidKeys = new Set(map.voidCells.map(cellKey));
+    for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
+      for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+        const neighbor = { x: cell.x + xOffset, y: cell.y + yOffset };
+        assert(
+          neighbor.x >= 0 &&
+            neighbor.y >= 0 &&
+            neighbor.x < map.width &&
+            neighbor.y < map.height,
+          `${kind} at ${cellKey(cell)} borders the ${map.mapShape} map edge`,
+        );
+        assert(
+          !voidKeys.has(cellKey(neighbor)),
+          `${kind} at ${cellKey(cell)} borders a ${map.mapShape} void cell`,
+        );
+      }
+    }
+  };
+
+  for (const mapShape of DEFAULT_MAP_SHAPES) {
+    const baseMap = generateBaseMap({
+      seed: `floor-effect-buffer-${mapShape}`,
+      width: 26,
+      height: 21,
+      mapShape,
+      rockDensity: 0,
+      slowTowerCount: 0,
+      speedTowerCount: 0,
+      portalCount: 1,
+      trapDoorCount: 2,
+      endlessFeastCount: 0,
+    });
+    const augmentedMap = applyMapAugments(baseMap, [
+      AUGMENT_IDS.GATES_OF_HADES,
+      AUGMENT_IDS.TRAP_QUEEN,
+    ]);
+    assert.equal(augmentedMap.portalPair.length, 4);
+    assert.equal(augmentedMap.baseTrapDoors.length, 5);
+    for (const portal of augmentedMap.portalPair) {
+      assertPlayableBuffer(augmentedMap, portal, "portal");
+    }
+    for (const trapDoor of augmentedMap.baseTrapDoors) {
+      assertPlayableBuffer(augmentedMap, trapDoor, "trap door");
+    }
+  }
+});
+
 test("multiple portal pairs remain separated and each pair can teleport once", () => {
   const generated = generateBaseMap({
     seed: "two-separated-portal-pairs",
@@ -1024,6 +1073,8 @@ test("Endless Feast is a deterministic 20% mandatory checkpoint with an open sid
     rockDensity: 0.2,
     slowTowerCount: 1,
     speedTowerCount: 1,
+    portalCount: 0,
+    trapDoorCount: 0,
     endlessFeastCount: 1,
   };
   const map = generateBaseMap(options);

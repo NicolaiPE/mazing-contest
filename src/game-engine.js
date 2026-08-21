@@ -251,6 +251,21 @@ function isSeparatedFromPortals(cell, portals) {
   );
 }
 
+function hasPlayableFloorEffectClearance(cell, width, height, playableKeys) {
+  for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
+    for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
+      const neighbor = { x: cell.x + xOffset, y: cell.y + yOffset };
+      if (
+        !isInsideGrid(neighbor, width, height) ||
+        !playableKeys.has(cellKey(neighbor))
+      ) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function canonicalPortalOrder(portals) {
   const pairs = [];
   for (let index = 0; index < portals.length; index += 2) {
@@ -1590,9 +1605,11 @@ function resolveEndlessFeastSpawnCount(options, seed) {
 /**
  * Builds deterministic rocks, towers, linked portals, and trap doors. A
  * candidate is retained only if pathfinding confirms the map still has a
- * route, so every seed is playable. Every feature has a domain-separated RNG
- * stream; speed towers and trap doors use the slow-tower count distribution,
- * while linked portals use an independent 25% roll.
+ * route, so every seed is playable. Portals and trap doors also require a full
+ * 3x3 playable neighborhood, keeping them clear of board edges and void cells.
+ * Every feature has a domain-separated RNG stream; speed towers and trap doors
+ * use the slow-tower count distribution, while linked portals use an
+ * independent 25% roll.
  */
 export function generateBaseMap(options = {}) {
   const width = options.width ?? DEFAULT_GAME_CONFIG.width;
@@ -1625,11 +1642,11 @@ export function generateBaseMap(options = {}) {
   const allCandidates = layout.playableCells.filter(
     (cell) => !cellsEqual(cell, start) && !cellsEqual(cell, goal),
   );
+  const playableKeys = new Set(layout.playableCells.map(cellKey));
 
   const endlessFeastSpawn = resolveEndlessFeastSpawnCount(options, seed);
   let endlessFeast = null;
   if (endlessFeastSpawn.count === 1) {
-    const playableKeys = new Set(layout.playableCells.map(cellKey));
     const feastCandidates = shuffleDeterministically(
       allCandidates.filter((cell) => {
         const cardinalClearance = CARDINAL_DIRECTIONS.filter((direction) =>
@@ -1674,6 +1691,9 @@ export function generateBaseMap(options = {}) {
   }
   const candidates = allCandidates.filter(
     (cell) => !feastClearingKeys.has(cellKey(cell)),
+  );
+  const floorEffectCandidates = candidates.filter((cell) =>
+    hasPlayableFloorEffectClearance(cell, width, height, playableKeys)
   );
 
   const shuffled = shuffleDeterministically(candidates, `${seed}:base-rocks`);
@@ -1775,7 +1795,7 @@ export function generateBaseMap(options = {}) {
   ]);
   const portalSpawn = resolvePortalSpawnCount(options, seed);
   const portalCandidates = shuffleDeterministically(
-    candidates.filter((cell) => !occupiedKeys.has(cellKey(cell))),
+    floorEffectCandidates.filter((cell) => !occupiedKeys.has(cellKey(cell))),
     `${seed}:portal-cells-v1`,
   );
   let portalPair = [];
@@ -1832,7 +1852,7 @@ export function generateBaseMap(options = {}) {
 
   const trapDoorSpawn = resolveTrapDoorSpawnCount(options, seed);
   const trapDoorCandidates = shuffleDeterministically(
-    candidates.filter((cell) => !occupiedKeys.has(cellKey(cell))),
+    floorEffectCandidates.filter((cell) => !occupiedKeys.has(cellKey(cell))),
     `${seed}:trap-door-cells-v1`,
   );
   const baseTrapDoors = [];
