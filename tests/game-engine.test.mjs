@@ -142,6 +142,18 @@ test("leaderboard interface text contains no UTF-8 mojibake", () => {
   assert.match(appSource, /Seed \$\{escapeMarkup\(entry\.seed\)\} · /u);
 });
 
+test("interface copy and portal art match the field presentation rules", () => {
+  const indexSource = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const appSource = readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
+  assert.match(indexSource, />Stop the escape</u);
+  assert.doesNotMatch(indexSource, /guild gates are open/iu);
+  assert.match(indexSource, /Neutral slow tower[\s\S]*58% none · 36% one · 6% two/u);
+  assert.match(indexSource, /class="portal-note-icon" aria-hidden="true"><\/span>/u);
+  assert.match(appSource, /const pairHue = \(282 \+ pairIndex \* 67\) % 360;/u);
+  assert.doesNotMatch(appSource, /\$\{pairIndex \+ 1\}.*[AB]/u);
+  assert.doesNotMatch(appSource, /fillText\(inactive \? "OFF"/u);
+});
+
 test("online lobby transfers host ownership when someone leaves before a run", () => {
   const room = createLobbyState({
     code: "LEAVE2",

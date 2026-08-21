@@ -2973,14 +2973,14 @@ function drawLinkedPortal(cell, index, now) {
   const point = cellCenter(cell);
   const size = geometry.cell;
   const pairIndex = Math.floor(index / 2);
-  const endIndex = index % 2;
+  const pairHue = (282 + pairIndex * 67) % 360;
   const inactive = portalHasDeactivated(pairIndex);
   const pulse = inactive ? 1 : 1 + Math.sin(now / 190 + index * Math.PI) * 0.08;
   context.save();
   context.translate(point.x, point.y);
   context.globalAlpha = inactive ? 0.42 : 1;
   const glow = context.createRadialGradient(0, 0, 0, 0, 0, size * 0.5);
-  glow.addColorStop(0, inactive ? "rgba(90,96,106,.2)" : "rgba(204,139,255,.44)");
+  glow.addColorStop(0, inactive ? "rgba(90,96,106,.2)" : `hsla(${pairHue}, 78%, 70%, .44)`);
   glow.addColorStop(1, "rgba(71,38,120,0)");
   context.fillStyle = glow;
   context.beginPath();
@@ -2988,9 +2988,7 @@ function drawLinkedPortal(cell, index, now) {
   context.fill();
   context.strokeStyle = inactive
     ? "#72777e"
-    : endIndex === 0
-      ? `hsl(${282 + pairIndex * 67} 76% 73%)`
-      : `hsl(${194 + pairIndex * 67} 78% 70%)`;
+    : `hsl(${pairHue} 76% 73%)`;
   context.lineWidth = Math.max(2, size * 0.065);
   context.shadowColor = context.strokeStyle;
   context.shadowBlur = inactive ? 0 : size * 0.22;
@@ -3003,11 +3001,6 @@ function drawLinkedPortal(cell, index, now) {
   context.beginPath();
   context.ellipse(0, 0, size * 0.21, size * 0.12, 0, 0, Math.PI * 2);
   context.stroke();
-  context.fillStyle = inactive ? "#a8acb1" : "#f3e6ff";
-  context.font = `800 ${Math.max(8, size * 0.14)}px ui-sans-serif, system-ui, sans-serif`;
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillText(inactive ? "OFF" : `${pairIndex + 1}${endIndex === 0 ? "A" : "B"}`, 0, 0);
   context.restore();
 }
 

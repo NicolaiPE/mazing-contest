@@ -1083,6 +1083,29 @@ h1 {
   background: #183927;
 }
 
+.slow-tower-note {
+  border-color: rgba(132, 153, 236, 0.38);
+  background:
+    radial-gradient(circle at 7% 22%, rgba(132, 174, 255, 0.13), transparent 38%),
+    linear-gradient(180deg, rgba(38, 37, 75, 0.76), rgba(23, 22, 48, 0.78));
+}
+
+.slow-tower-note strong {
+  color: #d5ddff;
+}
+
+.slow-tower-note small {
+  color: #aeb9e5;
+}
+
+.neutral-slow-tower-icon {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(132, 188, 255, 0.62);
+  border-radius: 50%;
+}
+
 .portal-note {
   border-color: rgba(174, 116, 238, 0.4);
   background:
@@ -1111,10 +1134,30 @@ h1 {
 }
 
 .portal-note-icon {
+  position: relative;
   border: 1px solid rgba(203, 143, 255, 0.6);
-  color: #f0dcff;
   background: radial-gradient(circle, #7445a1 0 28%, #352046 31% 57%, #1d1229 60%);
   box-shadow: 0 0 11px rgba(175, 92, 240, 0.24);
+}
+
+.portal-note-icon::before,
+.portal-note-icon::after {
+  content: "";
+  position: absolute;
+  top: 10px;
+  width: 11px;
+  height: 8px;
+  border: 2px solid #e5c5ff;
+  border-radius: 50%;
+  box-shadow: 0 0 4px rgba(214, 157, 255, 0.7);
+}
+
+.portal-note-icon::before {
+  left: 3px;
+}
+
+.portal-note-icon::after {
+  right: 3px;
 }
 
 .trap-note {
