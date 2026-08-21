@@ -207,7 +207,7 @@ test("online lobby keeps builds private until every maze is submitted", () => {
   });
   assert.equal(room.phase, LOBBY_PHASES.BUILD);
   assert.equal(room.floor, 1);
-  assert.equal(room.buildDeadline, 62_000);
+  assert.equal(room.buildDeadline, 82_000);
 
   const floor = floorConfig(1);
   const snapshot = (scoreMs) => ({
@@ -253,7 +253,7 @@ test("online lobby keeps builds private until every maze is submitted", () => {
   assert.equal(advance.advanced, true);
   assert.equal(room.phase, LOBBY_PHASES.BUILD);
   assert.equal(room.floor, 2);
-  assert.equal(room.buildDeadline, 85_001);
+  assert.equal(room.buildDeadline, 105_001);
 });
 
 test("online lobby advances floor four directly to floor five without an augment", () => {
@@ -286,25 +286,30 @@ test("online lobby advances floor four directly to floor five without an augment
   assert.equal(advanced.advanced, true);
   assert.equal(room.phase, LOBBY_PHASES.BUILD);
   assert.equal(room.floor, 5);
-  assert.equal(room.buildDeadline, 142_002);
+  assert.equal(room.buildDeadline, 162_002);
 });
 
-test("roguelike floors grow by 2x2 and grant 20 more build seconds", () => {
+test("roguelike floors grow with 20-second timers and 20-gold bounds", () => {
   assert.equal(RUN_FLOORS, 5);
   assert.deepEqual(
     Array.from({ length: RUN_FLOORS }, (_, index) => floorConfig(index + 1)),
     [
-      { floorNumber: 1, width: 20, height: 15, buildDurationMs: 60_000 },
-      { floorNumber: 2, width: 22, height: 17, buildDurationMs: 80_000 },
-      { floorNumber: 3, width: 24, height: 19, buildDurationMs: 100_000 },
-      { floorNumber: 4, width: 26, height: 21, buildDurationMs: 120_000 },
-      { floorNumber: 5, width: 28, height: 23, buildDurationMs: 140_000 },
+      { floorNumber: 1, width: 20, height: 15, buildDurationMs: 80_000, minStartingGold: 80, maxStartingGold: 250 },
+      { floorNumber: 2, width: 22, height: 17, buildDurationMs: 100_000, minStartingGold: 100, maxStartingGold: 270 },
+      { floorNumber: 3, width: 24, height: 19, buildDurationMs: 120_000, minStartingGold: 120, maxStartingGold: 290 },
+      { floorNumber: 4, width: 26, height: 21, buildDurationMs: 140_000, minStartingGold: 140, maxStartingGold: 310 },
+      { floorNumber: 5, width: 28, height: 23, buildDurationMs: 160_000, minStartingGold: 160, maxStartingGold: 330 },
     ],
   );
 });
 
 test("roguelike augment drafts are deterministic, unique, and persistent", () => {
   const firstDraft = draftAugmentChoices("AUGMENT-RUN", 1);
+  assert.equal("WIDE_LAMENT" in AUGMENT_IDS, false);
+  assert.equal(
+    Object.values(AUGMENTS).filter((augment) => augment.tier === AUGMENT_TIERS.GOLD).length,
+    3,
+  );
   assert.deepEqual(firstDraft, draftAugmentChoices("AUGMENT-RUN", 1));
   assert.equal(firstDraft.length, 2);
   assert.equal(new Set(firstDraft).size, 2);
@@ -395,25 +400,20 @@ test("roguelike augment drafts are deterministic, unique, and persistent", () =>
   assert.equal(juxtaposed.baseSpeedTowers.length, 4);
 });
 
-test("wide Lament fields also trigger from diagonal tiles", () => {
+test("slow towers trigger from all eight surrounding tiles by default", () => {
   const path = [
     { x: 0, y: 0 },
     { x: 1, y: 1 },
     { x: 2, y: 2 },
   ];
   const towers = [{ x: 2, y: 0, id: "diagonal-lament" }];
-  const cardinalOnly = calculateRunnerSimulation(path, towers, {
+  const simulation = calculateRunnerSimulation(path, towers, {
     stepDurationMs: 1_000,
     turnPenaltyMs: 0,
   });
-  const wideLament = calculateRunnerSimulation(path, towers, {
-    stepDurationMs: 1_000,
-    turnPenaltyMs: 0,
-    slowTowerAffectsDiagonals: true,
-  });
-  assert.equal(cardinalOnly.slowApplications.length, 0);
-  assert.equal(wideLament.slowApplications.length, 1);
-  assert(wideLament.travelTimeMs > cardinalOnly.travelTimeMs);
+  assert.equal(simulation.slowApplications.length, 1);
+  assert.equal(simulation.slowApplications[0].pathIndex, 1);
+  assert(simulation.travelTimeMs > simulation.baseTravelTimeMs);
 });
 
 test("challenge links deterministically define every round and validate targets", () => {
@@ -1680,31 +1680,31 @@ test("a 50% slow lasts five seconds and expires accurately during an edge", () =
   assert.equal(atExpiry.slowed, false);
 });
 
-test("tower triggers are cardinal on entry and do not fire at the finished goal", () => {
+test("slow towers trigger diagonally on entry and do not fire at the finished goal", () => {
   const path = [
     { x: 0, y: 0 },
-    { x: 1, y: 0 },
-    { x: 2, y: 0 },
+    { x: 1, y: 1 },
+    { x: 2, y: 2 },
   ];
   const simulation = calculateRunnerSimulation(
     path,
     [
-      // Diagonal from the initial cell, then cardinal on entry to path[1].
-      { x: 1, y: 1, id: "middle" },
-      // Cardinal only to the goal; the run is already complete on that entry.
-      { x: 2, y: 1, id: "goal-side" },
+      // Diagonal from path[1], proving the full eight-cell influence.
+      { x: 2, y: 0, id: "middle" },
+      // Diagonal only to the goal; the run is already complete on that entry.
+      { x: 3, y: 3, id: "goal-side" },
     ],
     { stepDurationMs: 1_000, turnPenaltyMs: 0 },
   );
 
-  assert.equal(simulation.travelTimeMs, 3_000);
+  assert(simulation.travelTimeMs > simulation.baseTravelTimeMs);
   assert.deepEqual(
     simulation.slowApplications.map(({ towerId, pathIndex, atMs }) => ({
       towerId,
       pathIndex,
       atMs,
     })),
-    [{ towerId: "middle", pathIndex: 1, atMs: 1_000 }],
+    [{ towerId: "middle", pathIndex: 1, atMs: Math.SQRT2 * 1_000 }],
   );
 });
 
@@ -1726,10 +1726,10 @@ test("tower cooldown prevents early repeats and allows a later retrigger", () =>
     simulation.slowApplications.map(({ pathIndex, atMs }) => ({ pathIndex, atMs })),
     [
       { pathIndex: 0, atMs: 0 },
-      { pathIndex: 4, atMs: 6_500 },
+      { pathIndex: 3, atMs: 5_500 },
     ],
   );
-  assert.equal(simulation.travelTimeMs, 8_500);
+  assert.equal(simulation.travelTimeMs, 9_500);
 });
 
 test("a second tower refreshes rather than stacking the shared slow", () => {
@@ -1752,12 +1752,12 @@ test("a second tower refreshes rather than stacking the shared slow", () => {
     })),
     [
       { towerId: "first", atMs: 0, expiresAtMs: 5_000, refreshed: false },
-      { towerId: "second", atMs: 4_000, expiresAtMs: 9_000, refreshed: true },
+      { towerId: "second", atMs: 2_000, expiresAtMs: 7_000, refreshed: true },
     ],
   );
   assert.equal(simulation.slowWindows.length, 1);
-  assert.equal(simulation.slowWindows[0].endMs, 9_000);
-  assert.equal(simulation.travelTimeMs, 10_500);
+  assert.equal(simulation.slowWindows[0].endMs, 7_000);
+  assert.equal(simulation.travelTimeMs, 9_500);
 });
 
 test("a speed tower grants 1.5x speed for five seconds with mid-edge expiry", () => {
@@ -1765,7 +1765,7 @@ test("a speed tower grants 1.5x speed for five seconds with mid-edge expiry", ()
   const simulation = calculateRunnerSimulation(path, [], {
     stepDurationMs: 1_200,
     turnPenaltyMs: 0,
-    speedTowers: [{ x: 0, y: 1, id: "opening-speed" }],
+    speedTowers: [{ x: -1, y: 0, id: "opening-speed" }],
   });
 
   assert.equal(simulation.baseTravelTimeMs, 13_200);
@@ -1800,31 +1800,31 @@ test("a speed tower grants 1.5x speed for five seconds with mid-edge expiry", ()
   assert.equal(atExpiry.speedMultiplier, 1);
 });
 
-test("speed tower triggers are cardinal on entry, refresh without cooldown, and skip goal", () => {
+test("speed towers trigger diagonally, refresh without cooldown, and skip the goal", () => {
   const adjacency = calculateRunnerSimulation(
     [
       { x: 0, y: 0 },
-      { x: 1, y: 0 },
-      { x: 2, y: 0 },
+      { x: 1, y: 1 },
+      { x: 2, y: 2 },
     ],
     [],
     {
       stepDurationMs: 1_000,
       turnPenaltyMs: 0,
       speedTowers: [
-        { x: 1, y: 1, id: "middle" },
-        { x: 2, y: 1, id: "goal-side" },
+        { x: 2, y: 0, id: "middle" },
+        { x: 3, y: 3, id: "goal-side" },
       ],
     },
   );
-  assert.equal(adjacency.travelTimeMs, 1_500);
+  assert(adjacency.travelTimeMs < adjacency.baseTravelTimeMs);
   assert.deepEqual(
     adjacency.speedApplications.map(({ towerId, pathIndex, atMs }) => ({
       towerId,
       pathIndex,
       atMs,
     })),
-    [{ towerId: "middle", pathIndex: 1, atMs: 1_000 }],
+    [{ towerId: "middle", pathIndex: 1, atMs: Math.SQRT2 * 1_000 }],
   );
 
   const refresh = calculateRunnerSimulation(
@@ -1844,15 +1844,16 @@ test("speed tower triggers are cardinal on entry, refresh without cooldown, and 
     },
   );
   assert.deepEqual(
-    refresh.speedApplications.map(({ pathIndex, atMs, refreshed }) => ({
+    refresh.speedApplications.map(({ pathIndex, refreshed }) => ({
       pathIndex,
-      atMs,
       refreshed,
     })),
     [
-      { pathIndex: 0, atMs: 0, refreshed: false },
-      { pathIndex: 2, atMs: 1_000, refreshed: true },
-      { pathIndex: 4, atMs: 2_000, refreshed: true },
+      { pathIndex: 0, refreshed: false },
+      { pathIndex: 1, refreshed: true },
+      { pathIndex: 2, refreshed: true },
+      { pathIndex: 3, refreshed: true },
+      { pathIndex: 4, refreshed: true },
     ],
   );
 });
@@ -1861,11 +1862,11 @@ test("slow and speed effects multiply and remain visible together", () => {
   const path = Array.from({ length: 7 }, (_, x) => ({ x, y: 1 }));
   const simulation = calculateRunnerSimulation(
     path,
-    [{ x: 0, y: 0, id: "slow" }],
+    [{ x: -1, y: 1, id: "slow" }],
     {
       stepDurationMs: 1_000,
       turnPenaltyMs: 0,
-      speedTowers: [{ x: 0, y: 2, id: "speed" }],
+      speedTowers: [{ x: -1, y: 1, id: "speed" }],
     },
   );
 
@@ -1897,9 +1898,9 @@ test("base speed towers feed authoritative state scoring and custom rules", () =
 
   assert.equal(state.rules.speedSpeedMultiplier, 4);
   assert.equal(state.rules.speedDurationMs, 2_000);
-  assert.equal(state.runnerSimulation.speedApplications.length, 1);
+  assert.equal(state.runnerSimulation.speedApplications.length, 2);
   assert.equal(state.routeMetrics.baseTravelTimeMs, 12_000);
-  assert.equal(state.scoreMs, 6_000);
+  assert.equal(state.scoreMs, 5_250);
   assert.equal(state.scoreMs, state.runnerSimulation.travelTimeMs);
 });
 

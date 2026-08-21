@@ -74,7 +74,7 @@
               </div>
               <div class="resource-chip timer-chip">
                 <span class="chip-icon" aria-hidden="true">◷</span>
-                <span><strong id="timerValue">1:00</strong><small> build</small></span>
+                <span><strong id="timerValue">1:20</strong><small> build</small></span>
               </div>
               <div class="resource-chip augment-chip" id="activeAugmentChip" title="No augments selected yet">
                 <span class="chip-icon" aria-hidden="true">✦</span>
@@ -159,7 +159,7 @@
                 type="button"
                 data-tool="slowTower"
                 aria-pressed="false"
-                title="Costs 1 Tear of the Runner. Slows a runner entering an orthogonally adjacent tile."
+                title="Costs 1 Tear of the Runner. Slows a runner entering any of the eight adjacent tiles."
               >
                 <span class="tool-hotkey">4</span>
                 <span class="tool-icon slow-tower-icon" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -183,7 +183,7 @@
               <span class="neutral-tower-icon" aria-hidden="true"><i></i></span>
               <span>
                 <strong>Neutral speed tower</strong>
-                <small>Same 0/1/2 rates as slow towers · adjacent tile grants +50% speed for 5 seconds · fixed in place</small>
+                <small>Same 0/1/2 rates as slow towers · all 8 surrounding tiles grant +50% speed for 5 seconds · fixed in place</small>
               </span>
             </div>
             <div class="neutral-tower-note portal-note" role="note" aria-label="Linked portal field event">
@@ -267,12 +267,12 @@
               </p>
               <ul class="effect-rules">
                 <li id="slowTowerRule">
-                  <b>Tower of Lament:</b> an orthogonally adjacent tile triggers 50% speed for 5 seconds,
+                  <b>Tower of Lament:</b> any of the eight adjacent tiles triggers 50% speed for 5 seconds,
                   followed by its 5-second recharge.
                 </li>
                 <li id="speedTowerRule">
-                  <b>Neutral speed tower:</b> uses the same 0/1/2 spawn rates as slow towers. An orthogonally
-                  adjacent tile grants +50% speed for 5 seconds. It cannot be built or removed.
+                  <b>Neutral speed tower:</b> uses the same 0/1/2 spawn rates as slow towers. Any of the eight
+                  adjacent tiles grants +50% speed for 5 seconds. It cannot be built or removed.
                 </li>
                 <li>
                   <b>Linked portal:</b> has a 25% chance to place two linked ends at least three squares apart.
@@ -337,7 +337,7 @@
             />
             <span>floors</span>
           </div>
-          <small id="roundCountHelp">Five floors. Each grows by 2×2 cells and grants 20 more build seconds.</small>
+          <small id="roundCountHelp">Five floors. Each grows by 2×2 cells and adds 20 seconds plus 20 to both gold bounds.</small>
         </div>
         <div class="modal-rules">
           <div><b>1</b><span>Choose a tool</span></div>

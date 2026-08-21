@@ -4,8 +4,11 @@ export const RUN_FLOORS = 5;
 export const BASE_FLOOR_WIDTH = 20;
 export const BASE_FLOOR_HEIGHT = 15;
 export const FLOOR_SIZE_GROWTH = 2;
-export const BASE_BUILD_DURATION_MS = 60_000;
+export const BASE_BUILD_DURATION_MS = 80_000;
 export const BUILD_DURATION_GROWTH_MS = 20_000;
+export const BASE_MIN_STARTING_GOLD = 80;
+export const BASE_MAX_STARTING_GOLD = 250;
+export const STARTING_GOLD_GROWTH = 20;
 
 export const AUGMENT_TIERS = Object.freeze({
   GOLD: "gold",
@@ -16,7 +19,6 @@ export const AUGMENT_DRAFT_FLOORS = Object.freeze([1, 2, 3]);
 
 export const AUGMENT_IDS = Object.freeze({
   BONUS_GOLD: "bonus-gold",
-  WIDE_LAMENT: "wide-lament",
   CORRUPT_SPEED: "corrupt-speed",
   CHEAP_BUILDINGS: "cheap-buildings",
   GATES_OF_HADES: "gates-of-hades",
@@ -32,13 +34,6 @@ export const AUGMENTS = Object.freeze({
     tier: AUGMENT_TIERS.GOLD,
     icon: "+30",
     description: "Start every remaining floor with 30 extra gold.",
-  }),
-  [AUGMENT_IDS.WIDE_LAMENT]: Object.freeze({
-    id: AUGMENT_IDS.WIDE_LAMENT,
-    name: "Echoing Lament",
-    tier: AUGMENT_TIERS.GOLD,
-    icon: "8×",
-    description: "Slow towers affect all eight adjacent tiles, including diagonals.",
   }),
   [AUGMENT_IDS.CORRUPT_SPEED]: Object.freeze({
     id: AUGMENT_IDS.CORRUPT_SPEED,
@@ -111,6 +106,7 @@ export function floorConfig(floorNumber) {
     throw new RangeError(`floorNumber must be between 1 and ${RUN_FLOORS}.`);
   }
   const growth = (floorNumber - 1) * FLOOR_SIZE_GROWTH;
+  const goldGrowth = (floorNumber - 1) * STARTING_GOLD_GROWTH;
   return {
     floorNumber,
     width: BASE_FLOOR_WIDTH + growth,
@@ -118,6 +114,8 @@ export function floorConfig(floorNumber) {
     buildDurationMs:
       BASE_BUILD_DURATION_MS +
       (floorNumber - 1) * BUILD_DURATION_GROWTH_MS,
+    minStartingGold: BASE_MIN_STARTING_GOLD + goldGrowth,
+    maxStartingGold: BASE_MAX_STARTING_GOLD + goldGrowth,
   };
 }
 

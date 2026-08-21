@@ -58,8 +58,6 @@ import {
 } from "./leaderboard.js";
 
 const ROCK_DENSITY = 0.115;
-const MIN_STARTING_GOLD = 80;
-const MAX_STARTING_GOLD = 250;
 const STEP_DURATION_MS = 280;
 // Scores use deterministic geometric movement time. Turns remain visible route
 // metadata but do not make results depend on equivalent path tie ordering.
@@ -455,9 +453,6 @@ function createRoundState(seed, resources, floor, augmentIds = selectedAugments)
     refundRate: 1,
     stepDurationMs: STEP_DURATION_MS,
     turnPenaltyMs: TURN_PENALTY_MS,
-    slowTowerAffectsDiagonals: augmentIds.includes(
-      AUGMENT_IDS.WIDE_LAMENT,
-    ),
   });
   return { sharedMap, playerBaseMap, playerResources, state };
 }
@@ -487,8 +482,8 @@ function initRound(seed, waitForWelcome = false, options = {}) {
   currentFloor = floorConfig(roundNumber);
   roundSeed = seed;
   rivalRoundResources = generateRoundResources(seed, {
-    minGold: MIN_STARTING_GOLD,
-    maxGold: MAX_STARTING_GOLD,
+    minGold: currentFloor.minStartingGold,
+    maxGold: currentFloor.maxStartingGold,
     minTears: 0,
     maxTears: 2,
   });
@@ -524,6 +519,8 @@ function initRound(seed, waitForWelcome = false, options = {}) {
   document.body.dataset.floorWidth = String(currentFloor.width);
   document.body.dataset.floorHeight = String(currentFloor.height);
   document.body.dataset.buildDurationMs = String(currentFloor.buildDurationMs);
+  document.body.dataset.minStartingGold = String(currentFloor.minStartingGold);
+  document.body.dataset.maxStartingGold = String(currentFloor.maxStartingGold);
   document.body.dataset.neutralSlowTowers = String(baseMap.baseSlowTowers.length);
   document.body.dataset.neutralSpeedTowers = String(baseMap.baseSpeedTowers.length);
   document.body.dataset.portalPairs = String(baseMap.portalPair.length / 2);
@@ -2051,9 +2048,8 @@ function updateInterface(force = false) {
   const speedTowersConverted = selectedAugments.includes(AUGMENT_IDS.CORRUPT_SPEED);
   dom.speedTowerNote.hidden = speedTowersConverted;
   dom.speedTowerRule.hidden = speedTowersConverted;
-  dom.slowTowerRule.innerHTML = selectedAugments.includes(AUGMENT_IDS.WIDE_LAMENT)
-    ? "<b>Tower of Lament:</b> any adjacent tile, including diagonals, triggers 50% speed for 5 seconds, followed by its 5-second recharge."
-    : "<b>Tower of Lament:</b> an orthogonally adjacent tile triggers 50% speed for 5 seconds, followed by its 5-second recharge.";
+  dom.slowTowerRule.innerHTML =
+    "<b>Tower of Lament:</b> any of the eight adjacent tiles triggers 50% speed for 5 seconds, followed by its 5-second recharge.";
   dom.route.textContent = formatDistance(routeDistance(viewedState));
   dom.estimate.textContent = (viewedState.scoreMs / 1000).toFixed(1);
   dom.placed.textContent = placedPieceCount(viewedState);
@@ -2160,9 +2156,7 @@ function updateInterface(force = false) {
     const costLabel = card.querySelector("[data-tool-cost]");
     if (costLabel) costLabel.textContent = `${tool.cost} ◆`;
     if (tool.id === "slowTower") {
-      card.title = selectedAugments.includes(AUGMENT_IDS.WIDE_LAMENT)
-        ? "Costs 1 Tear. Slows a runner entering any of the eight adjacent tiles."
-        : "Costs 1 Tear. Slows a runner entering an orthogonally adjacent tile.";
+      card.title = "Costs 1 Tear. Slows a runner entering any of the eight adjacent tiles.";
     }
   }
   dom.rotationHint.textContent = phase === "run"
@@ -2734,14 +2728,10 @@ function drawSlowTowerInfluence(now) {
     { x: -1, y: 0 },
     { x: 0, y: 1 },
     { x: 0, y: -1 },
-    ...(renderState.rules.slowTowerAffectsDiagonals
-      ? [
-          { x: 1, y: 1 },
-          { x: 1, y: -1 },
-          { x: -1, y: 1 },
-          { x: -1, y: -1 },
-        ]
-      : []),
+    { x: 1, y: 1 },
+    { x: 1, y: -1 },
+    { x: -1, y: 1 },
+    { x: -1, y: -1 },
   ];
   context.save();
   for (const tower of slowTowerEntries()) {
@@ -2787,6 +2777,10 @@ function drawSpeedTowerInfluence(now) {
       { x: -1, y: 0 },
       { x: 0, y: 1 },
       { x: 0, y: -1 },
+      { x: 1, y: 1 },
+      { x: 1, y: -1 },
+      { x: -1, y: 1 },
+      { x: -1, y: -1 },
     ]) {
       const cell = { x: tower.x + offset.x, y: tower.y + offset.y };
       if (!isPlayableCell(renderState, cell)) continue;
@@ -3438,7 +3432,7 @@ dom.nextRoundButton.addEventListener("click", () => {
     isSharedChallenge = false;
     challengeTargetMs = null;
     dom.roundCount.disabled = true;
-    dom.roundCountHelp.textContent = "Five floors. Each grows by 2×2 cells and grants 20 more build seconds.";
+    dom.roundCountHelp.textContent = "Five floors. Each grows by 2×2 cells and adds 20 seconds plus 20 to both gold bounds.";
     dom.challengeTarget.hidden = true;
     document.body.dataset.sharedChallenge = "false";
     const cleanUrl = new URL(window.location.href);
@@ -3636,7 +3630,7 @@ dom.roundCount.value = String(totalRounds);
 dom.roundCount.disabled = true;
 dom.roundCountHelp.textContent = isSharedChallenge
   ? "Challenge depth is locked: every friend receives the same five-floor run."
-  : "Five floors. Each grows by 2×2 cells and grants 20 more build seconds.";
+  : "Five floors. Each grows by 2×2 cells and adds 20 seconds plus 20 to both gold bounds.";
 dom.challengeTarget.hidden = challengeTargetMs === null;
 if (challengeTargetMs !== null) {
   dom.challengeTarget.textContent = `Friend challenge: beat ${formatSeconds(challengeTargetMs)} across all ${totalRounds} floors.`;

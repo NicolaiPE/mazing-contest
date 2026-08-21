@@ -94,13 +94,13 @@
           RUN_FLOORS === 5 &&
             JSON.stringify(Array.from({ length: 5 }, (_, index) => floorConfig(index + 1))) ===
               JSON.stringify([
-                { floorNumber: 1, width: 20, height: 15, buildDurationMs: 60_000 },
-                { floorNumber: 2, width: 22, height: 17, buildDurationMs: 80_000 },
-                { floorNumber: 3, width: 24, height: 19, buildDurationMs: 100_000 },
-                { floorNumber: 4, width: 26, height: 21, buildDurationMs: 120_000 },
-                { floorNumber: 5, width: 28, height: 23, buildDurationMs: 140_000 },
+                { floorNumber: 1, width: 20, height: 15, buildDurationMs: 80_000, minStartingGold: 80, maxStartingGold: 250 },
+                { floorNumber: 2, width: 22, height: 17, buildDurationMs: 100_000, minStartingGold: 100, maxStartingGold: 270 },
+                { floorNumber: 3, width: 24, height: 19, buildDurationMs: 120_000, minStartingGold: 120, maxStartingGold: 290 },
+                { floorNumber: 4, width: 26, height: 21, buildDurationMs: 140_000, minStartingGold: 140, maxStartingGold: 310 },
+                { floorNumber: 5, width: 28, height: 23, buildDurationMs: 160_000, minStartingGold: 160, maxStartingGold: 330 },
               ]),
-          "roguelike floors grow by 2x2 and grant 20 more build seconds",
+          "roguelike floors grow with 20-second timers and 20-gold bounds",
         );
         const fittedBoards = [
           [320, 240],
@@ -160,6 +160,8 @@
             JSON.stringify(firstAugmentDraft) ===
               JSON.stringify(draftAugmentChoices("BROWSER-RUN", 1)) &&
             firstAugmentDraft.every((id) => AUGMENTS[id].tier === AUGMENT_TIERS.GOLD) &&
+            !("WIDE_LAMENT" in AUGMENT_IDS) &&
+            Object.values(AUGMENTS).filter((augment) => augment.tier === AUGMENT_TIERS.GOLD).length === 3 &&
             radiantAugmentDraft.every((id) => AUGMENTS[id].tier === AUGMENT_TIERS.RADIANT) &&
             augmentTierForDraft(2) === AUGMENT_TIERS.GOLD &&
             augmentTierForDraft(3) === AUGMENT_TIERS.RADIANT &&
@@ -186,20 +188,17 @@
         );
         const diagonalPath = [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 2 }];
         const diagonalTower = [{ x: 2, y: 0, id: "browser-diagonal-lament" }];
-        const cardinalLament = calculateRunnerSimulation(diagonalPath, diagonalTower, {
+        const diagonalEffects = calculateRunnerSimulation(diagonalPath, diagonalTower, {
           stepDurationMs: 1_000,
           turnPenaltyMs: 0,
-        });
-        const wideLament = calculateRunnerSimulation(diagonalPath, diagonalTower, {
-          stepDurationMs: 1_000,
-          turnPenaltyMs: 0,
-          slowTowerAffectsDiagonals: true,
+          speedTowers: [{ x: 2, y: 0, id: "browser-diagonal-speed" }],
         });
         assert(
-          cardinalLament.slowApplications.length === 0 &&
-            wideLament.slowApplications.length === 1 &&
-            wideLament.travelTimeMs > cardinalLament.travelTimeMs,
-          "Echoing Lament slows all eight adjacent tiles",
+          diagonalEffects.slowApplications.length === 1 &&
+            diagonalEffects.speedApplications.length === 1 &&
+            diagonalEffects.slowApplications[0].pathIndex === 1 &&
+            diagonalEffects.speedApplications[0].pathIndex === 1,
+          "slow and speed towers affect all eight surrounding tiles",
         );
         const spectatorContestants = [
           { id: "player", isPlayer: true, state: { route: ["player"] } },
@@ -761,7 +760,7 @@
         );
         assert(
           slowSimulation.travelTimeMs === 1680 && slowSimulation.slowApplications.length === 1,
-          "a cardinal tower halves speed without frame-rate timing",
+          "an eight-tile slow tower halves speed without frame-rate timing",
         );
         assert(getRunnerPositionAtTime(slowSimulation, 500).slowed, "runner timeline exposes the active debuff for rendering");
 
@@ -771,7 +770,7 @@
           turnPenaltyMs: 0,
           speedDurationMs: 5_000,
           speedSpeedMultiplier: 2,
-          speedTowers: [{ x: 0, y: 1, id: "start-speed" }],
+          speedTowers: [{ x: -1, y: 0, id: "start-speed" }],
         });
         assert(
           speedSimulation.travelTimeMs === 7_000 &&
@@ -781,27 +780,28 @@
         );
 
         const diagonalOnlySpeed = calculateRunnerSimulation(
-          [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+          [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 2 }],
           [],
           {
             stepDurationMs: 1_000,
             turnPenaltyMs: 0,
-            speedTowers: [{ x: 1, y: 0, id: "diagonal-neighbor" }],
+            speedTowers: [{ x: 2, y: 0, id: "diagonal-neighbor" }],
           },
         );
         assert(
           diagonalOnlySpeed.speedApplications.length === 1 &&
-            diagonalOnlySpeed.travelTimeMs === Math.round((Math.SQRT2 * 1_000) / 1.5),
-          "tower adjacency stays cardinal while the default 50% boost uses geometric length",
+            diagonalOnlySpeed.speedApplications[0].pathIndex === 1 &&
+            diagonalOnlySpeed.travelTimeMs === Math.round(Math.SQRT2 * 1_000 * (1 + 1 / 1.5)),
+          "speed towers trigger diagonally across all eight surrounding tiles",
         );
 
         const balancedSimulation = calculateRunnerSimulation(
           [{ x: 0, y: 1 }, { x: 1, y: 1 }, { x: 2, y: 1 }],
-          [{ x: 0, y: 0, id: "balance-slow" }],
+          [{ x: -1, y: 1, id: "balance-slow" }],
           {
             stepDurationMs: 1_000,
             turnPenaltyMs: 0,
-            speedTowers: [{ x: 0, y: 2, id: "balance-speed" }],
+            speedTowers: [{ x: -1, y: 1, id: "balance-speed" }],
           },
         );
         const balancedPosition = getRunnerPositionAtTime(balancedSimulation, 500);
@@ -819,7 +819,7 @@
           {
             stepDurationMs: 1_000,
             turnPenaltyMs: 0,
-            speedTowers: [{ x: 1, y: 1, id: "goal-only" }],
+            speedTowers: [{ x: 2, y: 1, id: "goal-only" }],
           },
         );
         assert(
@@ -865,7 +865,9 @@
               appDocument.body.dataset.contestRounds === "5" &&
               appDocument.body.dataset.floorWidth === "20" &&
               appDocument.body.dataset.floorHeight === "15" &&
-              appDocument.body.dataset.buildDurationMs === "60000",
+              appDocument.body.dataset.buildDurationMs === "80000" &&
+              appDocument.body.dataset.minStartingGold === "80" &&
+              appDocument.body.dataset.maxStartingGold === "250",
             "shared challenge links lock the contest and display the score to beat",
           );
           assert(
@@ -960,6 +962,8 @@
             floorWidth: appDocument.body.dataset.floorWidth,
             floorHeight: appDocument.body.dataset.floorHeight,
             buildDurationMs: appDocument.body.dataset.buildDurationMs,
+            minStartingGold: appDocument.body.dataset.minStartingGold,
+            maxStartingGold: appDocument.body.dataset.maxStartingGold,
             chosenAugment,
             augments: JSON.parse(appDocument.body.dataset.augments ?? "[]"),
             augmentValue: appDocument.querySelector("#augmentValue")?.textContent,
@@ -972,7 +976,9 @@
               nextFloorSnapshot.floor === "2" &&
               nextFloorSnapshot.floorWidth === "22" &&
               nextFloorSnapshot.floorHeight === "17" &&
-              nextFloorSnapshot.buildDurationMs === "80000" &&
+              nextFloorSnapshot.buildDurationMs === "100000" &&
+              nextFloorSnapshot.minStartingGold === "100" &&
+              nextFloorSnapshot.maxStartingGold === "270" &&
               nextFloorSnapshot.augments.includes(chosenAugment) &&
               nextFloorSnapshot.augmentValue === "1" &&
               nextFloorSnapshot.boardFits === "true" &&
@@ -1108,6 +1114,8 @@
             floorWidth: appDocument.body.dataset.floorWidth,
             floorHeight: appDocument.body.dataset.floorHeight,
             buildDurationMs: appDocument.body.dataset.buildDurationMs,
+            minStartingGold: appDocument.body.dataset.minStartingGold,
+            maxStartingGold: appDocument.body.dataset.maxStartingGold,
             completedRounds: appDocument.body.dataset.completedRounds,
             augments: appDocument.body.dataset.augments,
             augmentModalOpen: appDocument.querySelector("#augmentModal")?.classList.contains("open"),
@@ -1121,7 +1129,9 @@
             floorFiveSnapshot.floor === "5" &&
             floorFiveSnapshot.floorWidth === "28" &&
             floorFiveSnapshot.floorHeight === "23" &&
-            floorFiveSnapshot.buildDurationMs === "140000" &&
+            floorFiveSnapshot.buildDurationMs === "160000" &&
+            floorFiveSnapshot.minStartingGold === "160" &&
+            floorFiveSnapshot.maxStartingGold === "330" &&
             floorFiveSnapshot.completedRounds === "4" &&
             floorFiveSnapshot.augments === floorFourInitialSnapshot.augments &&
             floorFiveSnapshot.augmentModalOpen === false &&
