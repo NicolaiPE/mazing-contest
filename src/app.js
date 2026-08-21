@@ -1359,8 +1359,8 @@ function renderGlobalLeaderboard() {
     tab.setAttribute("aria-selected", String(tab.dataset.leaderboardMode === globalLeaderboardState.mode));
   }
   if (globalLeaderboardState.loading) {
-    dom.globalLeaderboardList.innerHTML = '<div class="global-leaderboard-empty">Consulting the guild recordsâ€¦</div>';
-    dom.globalLeaderboardStatus.textContent = "Loading leaderboardâ€¦";
+    dom.globalLeaderboardList.innerHTML = '<div class="global-leaderboard-empty">Consulting the guild records…</div>';
+    dom.globalLeaderboardStatus.textContent = "Loading leaderboard…";
     return;
   }
   dom.globalLeaderboardList.innerHTML = globalLeaderboardState.entries.length > 0
@@ -1369,13 +1369,13 @@ function renderGlobalLeaderboard() {
           <b>${Number(entry.rank)}</b>
           <span>
             <strong>${escapeMarkup(entry.playerName)}</strong>
-            <small>Seed ${escapeMarkup(entry.seed)} Â· ${escapeMarkup(leaderboardDate(entry.playedAt))}</small>
+            <small>Seed ${escapeMarkup(entry.seed)} · ${escapeMarkup(leaderboardDate(entry.playedAt))}</small>
           </span>
           <strong>${formatSeconds(Number(entry.scoreMs))}</strong>
         </div>`).join("")
     : '<div class="global-leaderboard-empty">No completed runs have been recorded yet.</div>';
   dom.globalLeaderboardStatus.textContent = globalLeaderboardState.error ||
-    `${globalLeaderboardState.mode === LEADERBOARD_MODES.SOLO ? "Solo" : "Online"} Â· top ${globalLeaderboardState.entries.length || 0} of 10`;
+    `${globalLeaderboardState.mode === LEADERBOARD_MODES.SOLO ? "Solo" : "Online"} · top ${globalLeaderboardState.entries.length || 0} of 10`;
 }
 
 async function loadGlobalLeaderboard(mode = globalLeaderboardState.mode) {
@@ -1432,7 +1432,7 @@ async function recordSoloLeaderboardScore(scoreMs) {
   if (!playerName) return;
   soloLeaderboardSubmitted = true;
   dom.leaderboardSubmissionStatus.hidden = false;
-  dom.leaderboardSubmissionStatus.textContent = "Recording your solo scoreâ€¦";
+  dom.leaderboardSubmissionStatus.textContent = "Recording your solo score…";
   try {
     const result = await submitSoloLeaderboardEntry(DEFAULT_LOBBY_SERVER_URL, {
       id: leaderboardRunId,

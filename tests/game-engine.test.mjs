@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   CELL_TYPES,
@@ -133,6 +134,12 @@ test("leaderboard client URLs preserve deployed server paths", () => {
     leaderboardApiUrl("https://rooms.example.workers.dev/service/", CLIENT_LEADERBOARD_MODES.ONLINE),
     "https://rooms.example.workers.dev/service/leaderboard?mode=online",
   );
+});
+
+test("leaderboard interface text contains no UTF-8 mojibake", () => {
+  const appSource = readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
+  assert.doesNotMatch(appSource, /[ÂÃâ]/u);
+  assert.match(appSource, /Seed \$\{escapeMarkup\(entry\.seed\)\} · /u);
 });
 
 test("online lobby transfers host ownership when someone leaves before a run", () => {
